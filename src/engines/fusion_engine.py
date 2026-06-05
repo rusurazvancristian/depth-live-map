@@ -33,6 +33,8 @@ class ObjectTracker:
         # Process noise: continuous white noise acceleration model
         self.Q = np.array([[self.dt**4/4, self.dt**3/2],
                            [self.dt**3/2, self.dt**2  ]]) * 0.1
+        # Regularization term to guarantee strictly positive definite Q matrix
+        self.Q += np.eye(2) * 1e-6
 
         # State transition
         self.F = np.array([[1, self.dt],
@@ -40,19 +42,22 @@ class ObjectTracker:
         self.H = np.array([[1, 0]])    # we observe distance only
 
     def init(self, d0: float):
-        self.x = np.array([d0, 0.0])
+        # Clip initial distance to physical limits
+        self.x = np.array([np.clip(d0, 0.1, 100.0), 0.0])
         self.P = np.diag([1.0, 0.5])
 
     # ── Heteroscedastic noise models ────────────────────────────────────────
     @staticmethod
     def R_bbox(d: float) -> float:
         """Pinhole geometry error grows quadratically with distance."""
-        return (0.08 * d)**2   # 8% of distance, squared
+        d_clipped = max(0.1, d)
+        return max(1e-4, (0.08 * d_clipped)**2)  # min noise floor 1e-4
 
     @staticmethod
     def R_depth(d: float) -> float:
         """CNN relative depth error grows with d^1.5."""
-        return (0.06 * d**1.5)**2
+        d_clipped = max(0.1, d)
+        return max(1e-4, (0.06 * d_clipped**1.5)**2)  # protects against complex power issues
 
     # ── Predict step ────────────────────────────────────────────────────────
     def predict(self, dt: float):
@@ -60,9 +65,18 @@ class ObjectTracker:
         self.F[0, 1] = self.dt
         self.Q = np.array([[self.dt**4/4, self.dt**3/2],
                            [self.dt**3/2, self.dt**2  ]]) * 0.1
+        self.Q += np.eye(2) * 1e-6
+        
         if self.x is not None:
             self.x = self.F @ self.x
+            # Keep distance physically constrained after prediction
+            self.x[0] = np.clip(self.x[0], 0.1, 100.0)
+            
             self.P = self.F @ self.P @ self.F.T + self.Q
+            # Enforce symmetry and positive variance floor to prevent numerical drift
+            self.P = 0.5 * (self.P + self.P.T)
+            self.P[0, 0] = max(1e-6, self.P[0, 0])
+            self.P[1, 1] = max(1e-6, self.P[1, 1])
 
     # ── Update step (with Mahalanobis gate) ─────────────────────────────────
     def update(self, z: float, R: float) -> bool:
@@ -71,17 +85,33 @@ class ObjectTracker:
             self.init(z)
             return True
             
+        # Safe measurement noise floor
+        R = max(1e-4, R)
         S = (self.H @ self.P @ self.H.T + R).item()
+        if S <= 1e-9:
+            return False  # Prevent division by zero
+            
         innovation = (z - self.H @ self.x).item()
         
-        # Mahalanobis gate (chi-squared df=2, 95% threshold = 5.99)
+        # Mahalanobis gate (chi-squared df=1, 95% threshold = 3.84)
         gamma = innovation**2 / S
-        if gamma > 5.99:
+        if gamma > 3.84:
             return False   # Out-of-distribution measurement: reject, hold prior
         
-        K = self.P @ self.H.T / S
+        K = self.P @ self.H.T / S  # Shape: (2, 1)
         self.x = self.x + K.flatten() * innovation
-        self.P = (np.eye(2) - K @ self.H) @ self.P
+        
+        # Keep distance physically constrained after state update
+        self.x[0] = np.clip(self.x[0], 0.1, 100.0)
+        
+        # Joseph form update for numerical covariance stability
+        I_KH = np.eye(2) - K @ self.H
+        self.P = I_KH @ self.P @ I_KH.T + R * (K @ K.T)
+        
+        # Enforce symmetry and positive variance floor
+        self.P = 0.5 * (self.P + self.P.T)
+        self.P[0, 0] = max(1e-6, self.P[0, 0])
+        self.P[1, 1] = max(1e-6, self.P[1, 1])
         return True
 
     @property
@@ -260,11 +290,16 @@ class FusionEngine(BaseEngine):
                     
                 if feat_depth != -1.0 and self._tracker.x is not None:
                     # Align/smooth depth scale factor
-                    if self._tracker.scale_factor is None and feat_geom != -1.0:
-                        self._tracker.scale_factor = feat_geom / (feat_depth + 1e-6)
-                    elif feat_geom != -1.0:
-                        alpha = 0.05
-                        self._tracker.scale_factor = (1.0 - alpha) * self._tracker.scale_factor + alpha * (feat_geom / (feat_depth + 1e-6))
+                    if feat_geom != -1.0:
+                        safe_geom = max(0.1, feat_geom)
+                        safe_depth = max(1e-3, feat_depth)
+                        instantaneous_scale = np.clip(safe_geom / safe_depth, 0.1, 10.0)
+                        
+                        if self._tracker.scale_factor is None:
+                            self._tracker.scale_factor = instantaneous_scale
+                        else:
+                            alpha = 0.05
+                            self._tracker.scale_factor = (1.0 - alpha) * self._tracker.scale_factor + alpha * instantaneous_scale
                     
                     if self._tracker.scale_factor is not None:
                         d_depth = feat_depth * self._tracker.scale_factor

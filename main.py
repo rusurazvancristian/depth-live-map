@@ -98,15 +98,16 @@ def load_focal_length(config: Config) -> float:
         f_y = float(data["focal_length_px"])
         logger.info("Loaded f_y=%.1f from %s", f_y, config.intrinsics_json)
         return f_y
-    except (FileNotFoundError, KeyError):
+    except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
         logger.warning(
-            "intrinsics.json not found — using default f_y=%.1f. Run calibrate_camera.py!",
+            "Could not load intrinsics config (%s) — using default f_y=%.1f. Run calibrate_camera.py!",
+            e,
             config.focal_length_px,
         )
         return config.focal_length_px
 
 
-def build_pipeline(config: Config) -> list[BaseEngine]:
+def build_pipeline(config: Config, shared_device) -> list[BaseEngine]:
     """Instantiate and return all available engines in order.
 
     Engines 3 and 4 are conditionally loaded — if Track B hasn't implemented
@@ -114,11 +115,8 @@ def build_pipeline(config: Config) -> list[BaseEngine]:
     """
     focal_length_px = load_focal_length(config)
 
-    yolo_eng = YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf)
-    shared_device = yolo_eng._model._device if hasattr(yolo_eng, "_model") and hasattr(yolo_eng._model, "_device") else None
-
     engines: list[BaseEngine] = [
-        yolo_eng,
+        YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf, device=shared_device),
         GeometryEngine(focal_length_px=focal_length_px, heights_path=config.heights_json),
     ]
 
@@ -220,22 +218,42 @@ def init_camera(config: Config) -> Picamera2:
 
 def main() -> None:
     config = Config()
-    cam = init_camera(config)
-    engines = build_pipeline(config)
-
-    # Start YOLO session (holds the Hailo pipeline open across frames)
-    yolo: YOLOEngine = engines[0]
-    yolo.start()
-
-    cv2.namedWindow("How Far?", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("How Far?", config.display_width, config.display_height)
-
-    fps = 0.0
-    t_prev = time.perf_counter()
-
-    logger.info("Pipeline running. Press Q to quit.")
-
+    
+    # 1. Initialize VDevice at top level for proper NPU multi-network scheduling & safety
+    shared_device = None
     try:
+        from hailo_platform import VDevice, HailoSchedulingAlgorithm
+        params = VDevice.create_params()
+        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+        shared_device = VDevice(params)
+        logger.info("Created shared VDevice with ROUND_ROBIN scheduling.")
+    except ImportError:
+        logger.warning("hailo_platform not found. Running without NPU device context.")
+    except Exception as e:
+        logger.error(f"Failed to create shared VDevice: {e}. Running without NPU.")
+
+    cam = None
+    engines = []
+    
+    try:
+        # 2. Open camera context
+        cam = init_camera(config)
+        
+        # 3. Build pipeline using shared NPU context
+        engines = build_pipeline(config, shared_device)
+
+        # 4. Start lifecycle sessions on all engines (allocates VStreams once)
+        for engine in engines:
+            engine.start()
+
+        cv2.namedWindow("How Far?", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("How Far?", config.display_width, config.display_height)
+
+        fps = 0.0
+        t_prev = time.perf_counter()
+
+        logger.info("Pipeline running. Press Q to quit.")
+
         while True:
             frame = cv2.cvtColor(cam.capture_array(), cv2.COLOR_RGB2BGR)
             result = FrameResult(frame=frame, timestamp=time.perf_counter())
@@ -252,8 +270,28 @@ def main() -> None:
                 break
 
     finally:
-        yolo.stop()
-        cam.stop()
+        # 5. Stop lifecycle sessions on all engines (deallocates VStreams)
+        for engine in engines:
+            try:
+                engine.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping engine {engine.name}: {e}")
+
+        # 6. Stop camera to release file descriptor lock in OS
+        if cam is not None:
+            try:
+                cam.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping camera: {e}")
+                
+        # 7. Clean up shared VDevice
+        if shared_device is not None:
+            try:
+                del shared_device
+                logger.info("Shared VDevice context deleted.")
+            except Exception as e:
+                logger.warning(f"Error deleting shared VDevice: {e}")
+                
         cv2.destroyAllWindows()
         logger.info("Pipeline stopped.")
 

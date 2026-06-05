@@ -5,11 +5,7 @@ import numpy as np
 import cv2
 
 try:
-    from hailo_platform import (
-        VDevice, HEF, ConfigureParams,
-        InputVStreamParams, OutputVStreamParams,
-        FormatType, HailoStreamInterface, InferVStreams,
-    )
+    from hailo_platform import VDevice
     HAILO_AVAILABLE = True
 except ImportError:
     HAILO_AVAILABLE = False
@@ -18,6 +14,7 @@ except ImportError:
 
 from src.engines.base_engine import BaseEngine
 from data_contract import FrameResult
+from src.hailo_inference.hef_loader import HEFModel
 
 logger = logging.getLogger(__name__)
 
@@ -48,41 +45,48 @@ class DepthEngine(BaseEngine):
         self.model_input_height = model_input_height
         self.model_input_width = model_input_width
         self.vdevice = vdevice
+        self._model = None
         self._pipeline = None
-        self._owns_device = False
+        self._pipeline_ctx = None
 
         if HAILO_AVAILABLE:
             try:
-                self._init_hailo()
+                self._model = HEFModel(hef_path, device=vdevice)
+                self._input_name = self._model.input_name
+                self._output_name = self._model.output_name
+                logger.info(
+                    "DepthEngine Hailo initialized: %s | input=%s | output=%s",
+                    self.hef_path, self._input_name, self._output_name
+                )
             except Exception as e:
                 logger.error(f"Failed to initialize Hailo NPU for DepthEngine: {e}")
-                self._ng = None
+                self._model = None
         else:
             logger.info("DepthEngine initialized in mock mode.")
 
-    def _init_hailo(self) -> None:
-        """Initializes the Hailo NPU session, loading HEF and configuring streams."""
-        self._hef = HEF(self.hef_path)
-        self._owns_device = self.vdevice is None
-        if self.vdevice is None:
-            self.vdevice = VDevice()
-            
-        self._configure_params = ConfigureParams.create_from_hef(
-            self._hef, 
-            interface=HailoStreamInterface.PCIe
-        )
-        self._network_groups = self.vdevice.configure(self._hef, self._configure_params)
-        self._ng = self._network_groups[0]
-        self._ng_params = self._ng.create_params()
-        
-        # Get vstream names
-        self._input_name = self._hef.get_input_vstream_infos()[0].name
-        self._output_name = self._hef.get_output_vstream_infos()[0].name
+    def start(self) -> None:
+        """Initialize session and activate NPU network group once before the frame loop."""
+        if HAILO_AVAILABLE and self._model is not None:
+            try:
+                self._pipeline_ctx = self._model.session()
+                self._pipeline = self._pipeline_ctx.__enter__()
+                logger.info("DepthEngine session started successfully.")
+            except Exception as e:
+                logger.error(f"Failed to start DepthEngine NPU session: {e}")
+                self._pipeline = None
+                self._pipeline_ctx = None
 
-        logger.info(
-            "DepthEngine Hailo initialized: %s | input=%s | output=%s",
-            self.hef_path, self._input_name, self._output_name
-        )
+    def stop(self) -> None:
+        """Release session and deactivate NPU network group after the frame loop."""
+        if self._pipeline_ctx is not None:
+            try:
+                self._pipeline_ctx.__exit__(None, None, None)
+                logger.info("DepthEngine session stopped successfully.")
+            except Exception as e:
+                logger.error(f"Error stopping DepthEngine session: {e}")
+            finally:
+                self._pipeline = None
+                self._pipeline_ctx = None
 
     def process(self, result: FrameResult) -> FrameResult:
         """Extracts relative depth score and variance from the frame within the bbox.
@@ -104,25 +108,19 @@ class DepthEngine(BaseEngine):
             orig_h, orig_w = frame_bgr.shape[:2]
 
             # 1. Run NPU inference or fallback to mock
-            if HAILO_AVAILABLE and hasattr(self, '_ng') and self._ng is not None:
+            if HAILO_AVAILABLE and self._pipeline is not None:
                 # Resize to model input size (SCDepth expects HxW e.g. 256x320)
                 frame_resized = cv2.resize(frame_bgr, (self.model_input_width, self.model_input_height))
                 batch = np.expand_dims(frame_resized, axis=0)  # (1, H, W, 3) BGR uint8
                 
-                in_p = InputVStreamParams.make_from_network_group(self._ng, quantized=False, format_type=FormatType.UINT8)
-                out_p = OutputVStreamParams.make_from_network_group(self._ng, quantized=False, format_type=FormatType.FLOAT32)
-                
-                with InferVStreams(self._ng, in_p, out_p) as pipeline:
-                    with self._ng.activate(self._ng_params):
-                        infer_results = pipeline.infer({self._input_name: batch})
-                        # Raw output depth map shape is typically (1, H, W, 1) or flat
-                        raw_depth_map = infer_results[self._output_name][0]
+                # Run inference using the pre-activated pipeline context
+                raw_outputs = self._pipeline.infer({self._input_name: batch})
+                raw_depth_map = raw_outputs[self._output_name][0]
                 
                 # Reshape to expected (H, W)
                 depth_map = raw_depth_map.reshape((self.model_input_height, self.model_input_width))
             else:
                 # Dry-run fallback: generate a synthetic depth map (vertical gradient + center object depth)
-                # Simple vertical gradient simulating depth for dry-run
                 depth_map = np.linspace(0.8, 0.2, self.model_input_height)[:, None]
                 depth_map = np.repeat(depth_map, self.model_input_width, axis=1).astype(np.float32)
                 # Mock a closer object in the center area
@@ -175,8 +173,5 @@ class DepthEngine(BaseEngine):
         return result
 
     def __del__(self) -> None:
-        if HAILO_AVAILABLE and self._owns_device and hasattr(self, "_device") and self._device is not None:
-            try:
-                del self._device
-            except Exception:
-                pass
+        # Stop session if still active
+        self.stop()

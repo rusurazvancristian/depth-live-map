@@ -53,6 +53,7 @@ class YOLOEngine(BaseEngine):
         self._conf_thr = conf_threshold
         self._input_size = self._model.input_shape[0]  # square side, e.g. 640
         self._pipeline = None
+        self._pipeline_ctx = None
         self._active = None
         logger.info(
             "YOLOEngine ready | model=%s | conf_thr=%.2f | input=%d",

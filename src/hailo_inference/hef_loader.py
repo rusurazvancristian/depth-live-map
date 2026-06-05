@@ -10,6 +10,7 @@ try:
         VDevice, HEF, ConfigureParams,
         InputVStreamParams, OutputVStreamParams,
         FormatType, HailoStreamInterface, InferVStreams,
+        HailoSchedulingAlgorithm,
     )
     HAILO_AVAILABLE = True
 except ImportError:
@@ -56,7 +57,14 @@ class HEFModel:
 
         self._hef = HEF(hef_path)
         self._owns_device = device is None
-        self._device = device if device is not None else VDevice()
+        
+        if device is not None:
+            self._device = device
+        else:
+            # Create a VDevice with round-robin scheduling for multi-network concurrency
+            params = VDevice.create_params()
+            params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+            self._device = VDevice(params)
 
         params = ConfigureParams.create_from_hef(
             self._hef, interface=HailoStreamInterface.PCIe,
@@ -104,7 +112,7 @@ class HEFModel:
         """
         if not HAILO_AVAILABLE:
             # Mock YOLO-like output: 80 classes, class 0 (person) has 1 detection
-            # coordinates: x1n, y1n, x2n, y2n, score
+            # coordinates: y1n, x1n, y2n, x2n, score
             mock_dets = [np.array([[0.2, 0.2, 0.8, 0.8, 0.85]], dtype=np.float32)] + [
                 np.empty((0, 5), dtype=np.float32) for _ in range(79)
             ]
@@ -114,7 +122,7 @@ class HEFModel:
         return result[self.output_name]
 
     def __del__(self) -> None:
-        if HAILO_AVAILABLE and self._owns_device and hasattr(self, "_device"):
+        if HAILO_AVAILABLE and self._owns_device and hasattr(self, "_device") and self._device is not None:
             try:
                 del self._device
             except Exception:
