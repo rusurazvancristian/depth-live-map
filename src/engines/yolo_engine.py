@@ -7,7 +7,7 @@ import numpy as np
 from data_contract import FrameResult
 from src.engines.base_engine import BaseEngine
 from src.hailo_inference.hef_loader import HEFModel
-from src.hailo_inference.stream_utils import letterbox_resize, unletterbox_bbox, to_nhwc_batch
+from src.hailo_inference.stream_utils import to_nhwc_batch
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,10 @@ class YOLOEngine(BaseEngine):
             frame_bgr = result.frame
             orig_h, orig_w = frame_bgr.shape[:2]
 
-            rgb, scale, pad = letterbox_resize(frame_bgr, self._input_size)
+            # Simple resize (no letterbox) — model outputs coords normalised to
+            # the resized 640x640 space; direct x_n*orig_w mapping is correct.
+            resized = cv2.resize(frame_bgr, (self._input_size, self._input_size))
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             batch = to_nhwc_batch(rgb)
 
             raw = self._model.infer(self._pipeline, batch)
@@ -112,10 +115,10 @@ class YOLOEngine(BaseEngine):
                 return result
 
             class_id, det = best
-            x1, y1, x2, y2 = unletterbox_bbox(
-                det[0], det[1], det[2], det[3],
-                scale, pad, orig_w, orig_h, self._input_size,
-            )
+            x1 = int(np.clip(det[0] * orig_w, 0, orig_w - 1))
+            y1 = int(np.clip(det[1] * orig_h, 0, orig_h - 1))
+            x2 = int(np.clip(det[2] * orig_w, 0, orig_w - 1))
+            y2 = int(np.clip(det[3] * orig_h, 0, orig_h - 1))
 
             result.class_id = class_id
             result.class_name = COCO_CLASSES[class_id] if class_id < len(COCO_CLASSES) else str(class_id)
