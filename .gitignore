@@ -2,13 +2,15 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
 
 # Pytest cache
 .pytest_cache/
 
-# ONNX/HEF models (to prevent pushing large binary files)
+# Large model artifacts
 models/*.onnx
 models/*.hef
+models/*.pt
 models/*_norm.json
 
 # Local virtual environment
