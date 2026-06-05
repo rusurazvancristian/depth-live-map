@@ -137,24 +137,44 @@ def draw_overlay(frame: np.ndarray, result: FrameResult, fps: float) -> np.ndarr
     return vis
 
 
+# Slider range: 0-100 maps to LensPosition 0.0-10.0 dioptres
+# 0   = infinity (~inf m)
+# 10  = ~1.0 m
+# 20  = ~0.5 m
+# 100 = ~0.1 m (macro)
+_LENS_SCALE = 10.0  # slider_val / _LENS_SCALE = dioptres
+
+def _slider_to_dioptres(val: int) -> float:
+    return val / _LENS_SCALE
+
+def _dioptres_to_distance(d: float) -> str:
+    if d < 0.01:
+        return "inf"
+    return f"{1.0 / d:.2f}m"
+
+
 def init_camera(config: Config) -> Picamera2:
-    """Initialise and start the Camera Module 3.
+    """Initialise and start the Camera Module 3 in manual focus mode.
 
     Args:
         config: Config instance with cam_width, cam_height, cam_fps.
 
     Returns:
-        Running Picamera2 instance.
+        Running Picamera2 instance set to manual focus.
     """
     cam = Picamera2()
     cam_config = cam.create_preview_configuration(
         main={"size": (config.cam_width, config.cam_height), "format": "BGR888"},
-        controls={"FrameRate": config.cam_fps},
+        controls={
+            "FrameRate": config.cam_fps,
+            "AfMode": 0,          # 0=manual, 1=auto, 2=continuous
+            "LensPosition": 0.0,  # start at infinity
+        },
     )
     cam.configure(cam_config)
     cam.start()
-    time.sleep(1.0)  # warm up
-    logger.info("Camera started: %dx%d @ %d FPS", config.cam_width, config.cam_height, config.cam_fps)
+    time.sleep(1.0)
+    logger.info("Camera started: %dx%d @ %d FPS | focus=manual", config.cam_width, config.cam_height, config.cam_fps)
     return cam
 
 
@@ -163,20 +183,32 @@ def main() -> None:
     cam = init_camera(config)
     engines = build_pipeline(config)
 
-    # Start YOLO session (holds the Hailo pipeline open across frames)
     yolo: YOLOEngine = engines[0]
     yolo.start()
 
-    cv2.namedWindow("How Far?", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("How Far?", config.display_width, config.display_height)
+    WINDOW = "How Far?"
+    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW, config.display_width, config.display_height)
+
+    # Focus slider: 0 (infinity) .. 100 (macro ~0.1m)
+    cv2.createTrackbar("Focus (0=inf)", WINDOW, 0, 100, lambda _: None)
 
     fps = 0.0
     t_prev = time.perf_counter()
+    last_lens_val = -1  # detect changes
 
-    logger.info("Pipeline running. Press Q to quit.")
+    logger.info("Pipeline running. Slider = focus. Press Q to quit.")
 
     try:
         while True:
+            # Apply focus only when slider moves (avoid spamming camera controls)
+            slider_val = cv2.getTrackbarPos("Focus (0=inf)", WINDOW)
+            if slider_val != last_lens_val:
+                dioptres = _slider_to_dioptres(slider_val)
+                cam.set_controls({"LensPosition": dioptres})
+                last_lens_val = slider_val
+                logger.debug("LensPosition=%.2f  (~%s)", dioptres, _dioptres_to_distance(dioptres))
+
             frame = cam.capture_array()
             result = FrameResult(frame=frame, timestamp=time.perf_counter())
             result = run_pipeline(engines, result)
@@ -186,7 +218,15 @@ def main() -> None:
             t_prev = t_now
 
             vis = draw_overlay(frame, result, fps)
-            cv2.imshow("How Far?", cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
+
+            # Focus info overlay (bottom-right)
+            dioptres = _slider_to_dioptres(slider_val)
+            focus_text = f"Focus: {_dioptres_to_distance(dioptres)}"
+            h, w = vis.shape[:2]
+            cv2.putText(vis, focus_text, (w - 160, h - 36),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 1, cv2.LINE_AA)
+
+            cv2.imshow(WINDOW, cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
