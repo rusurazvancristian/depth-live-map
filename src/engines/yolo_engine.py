@@ -1,17 +1,20 @@
 """Engine 1 — YOLO object detection on Hailo-8 NPU. [TRACK A]"""
 
 import logging
-
+from typing import Any, Tuple, List, Optional, TYPE_CHECKING
 import numpy as np
+
+if TYPE_CHECKING:
+    from hailo_platform import VDevice
 
 from data_contract import FrameResult
 from src.engines.base_engine import BaseEngine
 from src.hailo_inference.hef_loader import HEFModel
-from src.hailo_inference.stream_utils import letterbox_resize, unletterbox_bbox, to_nhwc_batch
+from src.hailo_inference.stream_utils import letterbox_resize, unletterbox_bbox
 
 logger = logging.getLogger(__name__)
 
-COCO_CLASSES = [
+COCO_CLASSES: List[str] = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
     "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
     "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
@@ -28,33 +31,44 @@ COCO_CLASSES = [
 
 
 class YOLOEngine(BaseEngine):
-    """YOLOv8 object detector running on Hailo-8 NPU.
+    """YOLOv8/YOLO26 object detector running on Hailo-8 NPU.
 
-    Output format from yolov8*_h8.hef NMS postprocess:
-        result[out_name][batch_idx] = list of 80 arrays, one per class.
-        Each array shape: (N, 5) with [x1_norm, y1_norm, x2_norm, y2_norm, score].
+    Supports both traditional Hailo NMS output and NMS-free output shapes.
 
     Reads:  frame
     Writes: bbox, bbox_height_px, class_id, class_name, det_confidence
-
-    Args:
-        hef_path: Path to compiled yolov8*_h8.hef.
-        conf_threshold: Minimum detection confidence [0, 1].
-        device: Shared VDevice, or None to create a new one.
     """
+
+    _model: HEFModel
+    _conf_thr: float
+    _input_size: int
+    _pipeline: Any
+    _pipeline_ctx: Any
+
+    # Pre-allocated destination buffers for zero-allocation reuse
+    _dst_bgr: Optional[np.ndarray]
+    _batch_rgb: Optional[np.ndarray]
+    _orig_h: Optional[int]
+    _orig_w: Optional[int]
 
     def __init__(
         self,
         hef_path: str,
         conf_threshold: float = 0.5,
-        device=None,
+        device: Optional['VDevice'] = None,
     ) -> None:
         self._model = HEFModel(hef_path, device=device)
         self._conf_thr = conf_threshold
         self._input_size = self._model.input_shape[0]  # square side, e.g. 640
         self._pipeline = None
         self._pipeline_ctx = None
-        self._active = None
+        
+        # Initialize buffer tracking
+        self._dst_bgr = None
+        self._batch_rgb = None
+        self._orig_h = None
+        self._orig_w = None
+
         logger.info(
             "YOLOEngine ready | model=%s | conf_thr=%.2f | input=%d",
             hef_path, conf_threshold, self._input_size,
@@ -85,24 +99,58 @@ class YOLOEngine(BaseEngine):
             frame_bgr = result.frame
             orig_h, orig_w = frame_bgr.shape[:2]
 
-            rgb, scale, pad = letterbox_resize(frame_bgr, self._input_size)
-            batch = to_nhwc_batch(rgb)
+            # Lazy allocate pre-allocated buffers on resolution change
+            if self._batch_rgb is None or self._orig_h != orig_h or self._orig_w != orig_w:
+                self._orig_h = orig_h
+                self._orig_w = orig_w
+                scale = self._input_size / max(orig_h, orig_w)
+                new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+                self._dst_bgr = np.empty((new_h, new_w, 3), dtype=np.uint8)
+                self._batch_rgb = np.full((1, self._input_size, self._input_size, 3), 114, dtype=np.uint8)
+
+            # Preprocess using pre-allocated buffers
+            rgb, scale, pad = letterbox_resize(
+                frame_bgr,
+                self._input_size,
+                dst_bgr=self._dst_bgr,
+                dst_rgb=self._batch_rgb[0]
+            )
+            batch = self._batch_rgb
 
             raw = self._model.infer(self._pipeline, batch)
-            # raw[0] = list[80] of ndarray (N, 5): [x1n, y1n, x2n, y2n, score]
+            # raw[0] can be either a list (traditional NMS) or an array (NMS-free YOLO26/v10)
 
-            best_score = -1.0
-            best = None
+            best_score: float = -1.0
+            best: Optional[Tuple[int, np.ndarray]] = None
 
-            for class_id, dets in enumerate(raw[0]):
-                if dets is None or len(dets) == 0:
-                    continue
-                dets = np.asarray(dets)
-                for det in dets:
+            if isinstance(raw[0], np.ndarray):
+                # NMS-free YOLO26 / YOLOv10 format: typically shape (1, N, 6) or (N, 6)
+                arr = raw[0]
+                if arr.ndim == 3:
+                    arr = arr[0]  # Shape: (N, 6)
+                # Auto-transpose if shape is (6, N)
+                if arr.shape[0] == 6 and arr.shape[1] != 6:
+                    arr = arr.T
+
+                for det in arr:
+                    if len(det) < 6:
+                        continue
                     score = float(det[4])
                     if score >= self._conf_thr and score > best_score:
+                        class_id = int(det[5])
                         best_score = score
-                        best = (class_id, det)
+                        best = (class_id, det[:4])
+            else:
+                # Traditional Hailo NMS format: list of 80 arrays
+                for class_id, dets in enumerate(raw[0]):
+                    if dets is None or len(dets) == 0:
+                        continue
+                    dets = np.asarray(dets)
+                    for det in dets:
+                        score = float(det[4])
+                        if score >= self._conf_thr and score > best_score:
+                            best_score = score
+                            best = (class_id, det[:4])
 
             if best is None:
                 result.class_id = -1

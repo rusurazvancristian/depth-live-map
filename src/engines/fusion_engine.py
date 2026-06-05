@@ -5,6 +5,7 @@ import logging
 import os
 import json
 import math
+from typing import Optional, Tuple, Dict, Any
 
 from src.engines.base_engine import BaseEngine
 from data_contract import FrameResult
@@ -20,47 +21,47 @@ except ImportError:
 
 
 class ObjectTracker:
-    """
-    2-state Extended Kalman Filter per tracked object: x = [distance, velocity]
+    """2-state Extended Kalman Filter per tracked object: x = [distance, velocity]
+    
     Heteroscedastic measurement noise: auto graceful degradation at range.
     """
-    def __init__(self, dt: float = 1/30.0):
+    dt: float
+    x: Optional[np.ndarray]
+    P: Optional[np.ndarray]
+    scale_factor: Optional[float]
+    Q: np.ndarray
+    F: np.ndarray
+    H: np.ndarray
+
+    def __init__(self, dt: float = 1/30.0) -> None:
         self.dt = dt
-        self.x  = None     # [d, d_dot]
-        self.P  = None     # 2×2 covariance
+        self.x = None     # [d, d_dot]
+        self.P = None     # 2×2 covariance
         self.scale_factor = None  # Running calibration scale factor for relative depth
         
-        # Process noise: continuous white noise acceleration model
         self.Q = np.array([[self.dt**4/4, self.dt**3/2],
                            [self.dt**3/2, self.dt**2  ]]) * 0.1
-        # Regularization term to guarantee strictly positive definite Q matrix
         self.Q += np.eye(2) * 1e-6
 
-        # State transition
         self.F = np.array([[1, self.dt],
                            [0, 1      ]])
-        self.H = np.array([[1, 0]])    # we observe distance only
+        self.H = np.array([[1, 0]])    # observe distance only
 
-    def init(self, d0: float):
-        # Clip initial distance to physical limits
+    def init(self, d0: float) -> None:
         self.x = np.array([np.clip(d0, 0.1, 100.0), 0.0])
         self.P = np.diag([1.0, 0.5])
 
-    # ── Heteroscedastic noise models ────────────────────────────────────────
     @staticmethod
     def R_bbox(d: float) -> float:
-        """Pinhole geometry error grows quadratically with distance."""
         d_clipped = max(0.1, d)
-        return max(1e-4, (0.08 * d_clipped)**2)  # min noise floor 1e-4
+        return max(1e-4, (0.08 * d_clipped)**2)
 
     @staticmethod
     def R_depth(d: float) -> float:
-        """CNN relative depth error grows with d^1.5."""
         d_clipped = max(0.1, d)
-        return max(1e-4, (0.06 * d_clipped**1.5)**2)  # protects against complex power issues
+        return max(1e-4, (0.06 * d_clipped**1.5)**2)
 
-    # ── Predict step ────────────────────────────────────────────────────────
-    def predict(self, dt: float):
+    def predict(self, dt: float) -> None:
         self.dt = dt
         self.F[0, 1] = self.dt
         self.Q = np.array([[self.dt**4/4, self.dt**3/2],
@@ -69,46 +70,33 @@ class ObjectTracker:
         
         if self.x is not None:
             self.x = self.F @ self.x
-            # Keep distance physically constrained after prediction
             self.x[0] = np.clip(self.x[0], 0.1, 100.0)
-            
             self.P = self.F @ self.P @ self.F.T + self.Q
-            # Enforce symmetry and positive variance floor to prevent numerical drift
             self.P = 0.5 * (self.P + self.P.T)
             self.P[0, 0] = max(1e-6, self.P[0, 0])
             self.P[1, 1] = max(1e-6, self.P[1, 1])
 
-    # ── Update step (with Mahalanobis gate) ─────────────────────────────────
     def update(self, z: float, R: float) -> bool:
-        """Returns True if measurement accepted, False if gated out (OOD rejection)."""
         if self.x is None:
             self.init(z)
             return True
             
-        # Safe measurement noise floor
         R = max(1e-4, R)
         S = (self.H @ self.P @ self.H.T + R).item()
         if S <= 1e-9:
-            return False  # Prevent division by zero
+            return False
             
         innovation = (z - self.H @ self.x).item()
-        
-        # Mahalanobis gate (chi-squared df=1, 95% threshold = 3.84)
         gamma = innovation**2 / S
         if gamma > 3.84:
-            return False   # Out-of-distribution measurement: reject, hold prior
+            return False
         
-        K = self.P @ self.H.T / S  # Shape: (2, 1)
+        K = self.P @ self.H.T / S
         self.x = self.x + K.flatten() * innovation
-        
-        # Keep distance physically constrained after state update
         self.x[0] = np.clip(self.x[0], 0.1, 100.0)
         
-        # Joseph form update for numerical covariance stability
         I_KH = np.eye(2) - K @ self.H
         self.P = I_KH @ self.P @ I_KH.T + R * (K @ K.T)
-        
-        # Enforce symmetry and positive variance floor
         self.P = 0.5 * (self.P + self.P.T)
         self.P[0, 0] = max(1e-6, self.P[0, 0])
         self.P[1, 1] = max(1e-6, self.P[1, 1])
@@ -120,33 +108,25 @@ class ObjectTracker:
 
 
 class FusionEngine(BaseEngine):
-    """ONNX-based distance fusion Multi-Layer Perceptron (MLP) + 2-state EKF running on Pi CPU.
-    
-    Fuses geometric distance, relative depth score, and class ID to output 
-    calibrated metric distance and confidence intervals.
-    
-    Reads: d_geometric_m, rel_depth_score, class_id
-    Writes: final_distance_m, log_variance, confidence_68, confidence_95
-    """
+    """ONNX-based distance fusion MLP + 2-state EKF running on Pi CPU."""
+    onnx_path: str
+    _session: Optional["ort.InferenceSession"]
+    _tracker: ObjectTracker
+    _last_timestamp: Optional[float]
+    _last_class_id: int
+    mean: np.ndarray
+    std: np.ndarray
 
-    def __init__(self, onnx_path: str, norm_path: str = None) -> None:
-        """Initializes the FusionEngine.
-        
-        Args:
-            onnx_path: Path to the exported fusion_mlp.onnx model.
-            norm_path: Optional path to the normalization parameters JSON/Pt file.
-        """
+    def __init__(self, onnx_path: str, norm_path: Optional[str] = None) -> None:
         self.onnx_path = onnx_path
         self._session = None
         self._tracker = ObjectTracker()
         self._last_timestamp = None
         self._last_class_id = -1
         
-        # Load normalization parameters (default values if file is missing/invalid)
         self.mean = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.std = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         
-        # Find and load normalization parameters
         if norm_path is None:
             norm_path = os.path.splitext(onnx_path)[0] + "_norm.json"
             
@@ -164,7 +144,6 @@ class FusionEngine(BaseEngine):
                 self._session = None
 
     def _load_norm_params(self, path: str) -> None:
-        """Loads normalization mean and standard deviation from a JSON or PyTorch Pt file."""
         if path.endswith(".pt"):
             try:
                 import torch
@@ -180,7 +159,6 @@ class FusionEngine(BaseEngine):
             except Exception as e:
                 logger.warning(f"Failed to load PyTorch norm file {path}: {e}")
             
-            # Fall back to JSON paths if PyTorch failed or torch is not installed
             json_path = os.path.splitext(path)[0] + ".json"
             if os.path.exists(json_path):
                 path = json_path
@@ -202,29 +180,18 @@ class FusionEngine(BaseEngine):
             logger.warning(f"Normalization config {path} not found. Using defaults.")
 
     def process(self, result: FrameResult) -> FrameResult:
-        """Fuses input features to compute final metric distance and uncertainty.
-        
-        Args:
-            result: The current FrameResult object.
-            
-        Returns:
-            The modified FrameResult object.
-        """
-        # 1. Check time step
         t_now = result.timestamp
         if self._last_timestamp is None:
-            dt = 1/30.0  # default delta t
+            dt = 1/30.0
         else:
             dt = max(0.001, t_now - self._last_timestamp)
         self._last_timestamp = t_now
 
-        # Reset tracker if elapsed time is too large (e.g. tracking lost)
         if dt > 1.5:
             self._tracker.x = None
             self._tracker.P = None
             self._tracker.scale_factor = None
 
-        # Reset tracker if target object class changes
         current_class_id = result.class_id
         if current_class_id != self._last_class_id:
             self._tracker.x = None
@@ -240,10 +207,8 @@ class FusionEngine(BaseEngine):
         feat_depth = -1.0 if math.isnan(rel_depth) else float(rel_depth)
         feat_class = -1.0 if result.class_id < 0 else float(result.class_id)
 
-        # If we have no valid inputs at all, degrade to NaN outputs
         if feat_geom == -1.0 and feat_depth == -1.0:
             if self._tracker.x is not None:
-                # No detections: perform prediction/propagation step only (graceful decay)
                 self._tracker.predict(dt)
                 self._write_tracker_outputs(result)
             else:
@@ -254,7 +219,6 @@ class FusionEngine(BaseEngine):
             return result
 
         try:
-            # 2. Run ONNX MLP Inference (if available and inputs are valid)
             dist_mlp = float("nan")
             log_var_mlp = float("nan")
             
@@ -262,34 +226,29 @@ class FusionEngine(BaseEngine):
                 try:
                     raw_features = np.array([feat_geom, feat_depth, feat_class], dtype=np.float32)
                     norm_features = (raw_features - self.mean) / (self.std + 1e-8)
-                    input_batch = np.expand_dims(norm_features, axis=0)  # Shape: (1, 3)
+                    input_batch = np.expand_dims(norm_features, axis=0)
 
                     input_name = self._session.get_inputs()[0].name
-                    pred = self._session.run(None, {input_name: input_batch})[0]  # Shape: (1, 2)
+                    pred = self._session.run(None, {input_name: input_batch})[0]
                     dist_mlp = float(pred[0, 0])
                     log_var_mlp = float(pred[0, 1])
                 except Exception as e:
-                    logger.warning(f"ONNX MLP execution failed, falling back to analytical EKF: {e}")
+                    logger.warning(f"ONNX MLP execution failed: {e}")
 
-            # 3. EKF Predict
             if self._tracker.x is not None:
                 self._tracker.predict(dt)
 
-            # 4. EKF Update
             if not math.isnan(dist_mlp):
-                # We have a valid MLP prediction: update EKF using MLP output as the measurement
                 R = float(np.exp(log_var_mlp))
-                R = float(np.clip(R, 1e-4, 25.0))  # clip noise variance boundary
+                R = float(np.clip(R, 1e-4, 25.0))
                 self._tracker.update(dist_mlp, R)
             else:
-                # EKF fallback: Update directly using geometric and relative depth estimates
                 if feat_geom != -1.0:
                     d_est = feat_geom if self._tracker.x is None else self._tracker.distance
                     R_geom = self._tracker.R_bbox(d_est)
                     self._tracker.update(feat_geom, R_geom)
                     
                 if feat_depth != -1.0 and self._tracker.x is not None:
-                    # Align/smooth depth scale factor
                     if feat_geom != -1.0:
                         safe_geom = max(0.1, feat_geom)
                         safe_depth = max(1e-3, feat_depth)
@@ -306,7 +265,6 @@ class FusionEngine(BaseEngine):
                         R_depth = self._tracker.R_depth(self._tracker.distance)
                         self._tracker.update(d_depth, R_depth)
 
-            # 5. Populate EKF state outputs
             self._write_tracker_outputs(result)
 
         except Exception as e:
@@ -319,13 +277,10 @@ class FusionEngine(BaseEngine):
         return result
 
     def _write_tracker_outputs(self, result: FrameResult) -> None:
-        """Helper to write current tracker states to the FrameResult contract."""
         if self._tracker.x is not None:
             dist = float(self._tracker.distance)
             var = float(self._tracker.P[0, 0])
             sigma = float(np.sqrt(max(1e-6, var)))
-            
-            # Bound output metric to physical constraints
             dist = float(np.clip(dist, 0.1, 100.0))
             
             result.final_distance_m = dist

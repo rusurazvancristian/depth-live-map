@@ -91,11 +91,28 @@ except ImportError:
 
 
 def load_focal_length(config: Config) -> float:
-    """Load f_y from intrinsics.json if available, else use config default."""
+    """Load f_y from intrinsics.json if available, else use config default.
+    
+    Dynamically scales the focal length if the calibration image resolution 
+    differs from the run-time camera resolution.
+    """
     try:
         with open(config.intrinsics_json) as f:
             data = json.load(f)
         f_y = float(data["focal_length_px"])
+        
+        calib_w = data.get("width")
+        calib_h = data.get("height")
+        if calib_w and calib_h and (calib_w != config.cam_width or calib_h != config.cam_height):
+            # Scale f_y based on the height ratio
+            scale = config.cam_height / calib_h
+            f_y_scaled = f_y * scale
+            logger.info(
+                "Scaled loaded f_y from %.1f (calibrated at %dx%d) to %.1f (running at %dx%d)",
+                f_y, calib_w, calib_h, f_y_scaled, config.cam_width, config.cam_height
+            )
+            return f_y_scaled
+
         logger.info("Loaded f_y=%.1f from %s", f_y, config.intrinsics_json)
         return f_y
     except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
@@ -254,16 +271,27 @@ def main() -> None:
 
         logger.info("Pipeline running. Press Q to quit.")
 
+        # Pre-allocate BGR frame buffer for zero-allocation reuse
+        frame_bgr = None
+
         while True:
-            frame = cv2.cvtColor(cam.capture_array(), cv2.COLOR_RGB2BGR)
-            result = FrameResult(frame=frame, timestamp=time.perf_counter())
+            raw_frame = cam.capture_array()
+            
+            # Lazy allocate or adjust size to match captured frame resolution
+            if frame_bgr is None or frame_bgr.shape != raw_frame.shape:
+                frame_bgr = np.empty(raw_frame.shape, dtype=np.uint8)
+                
+            # Convert color in-place to pre-allocated buffer
+            cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR, dst=frame_bgr)
+            
+            result = FrameResult(frame=frame_bgr, timestamp=time.perf_counter())
             result = run_pipeline(engines, result)
 
             t_now = time.perf_counter()
             fps = 0.9 * fps + 0.1 * (1.0 / max(t_now - t_prev, 1e-6))
             t_prev = t_now
 
-            vis = draw_overlay(frame, result, fps)
+            vis = draw_overlay(frame_bgr, result, fps)
             cv2.imshow("How Far?", vis)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):

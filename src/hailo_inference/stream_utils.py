@@ -2,19 +2,26 @@
 
 import cv2
 import numpy as np
+from typing import Tuple, Optional
 
 
 def letterbox_resize(
     frame: np.ndarray,
     target_size: int = 640,
     pad_color: int = 114,
-) -> tuple[np.ndarray, float, tuple[int, int]]:
+    dst_bgr: Optional[np.ndarray] = None,
+    dst_rgb: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, float, Tuple[int, int]]:
     """Resize image with letterbox padding to maintain aspect ratio.
+
+    Supports optional pre-allocated destination buffers to avoid memory re-allocations.
 
     Args:
         frame: Input BGR image, shape (H, W, 3).
         target_size: Target square dimension in pixels.
         pad_color: Grayscale value used for padding borders.
+        dst_bgr: Pre-allocated destination array for BGR resize, shape (new_h, new_w, 3).
+        dst_rgb: Pre-allocated destination array for RGB output, shape (target_size, target_size, 3).
 
     Returns:
         Tuple of (padded_rgb_image, scale_factor, (pad_w, pad_h)).
@@ -23,8 +30,25 @@ def letterbox_resize(
     h, w = frame.shape[:2]
     scale = target_size / max(h, w)
     new_w, new_h = int(w * scale), int(h * scale)
-    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    pad_w = (target_size - new_w) // 2
+    pad_h = (target_size - new_h) // 2
 
+    if dst_rgb is not None:
+        # Fill padding borders in preallocated buffer
+        dst_rgb.fill(pad_color)
+        dst_slice = dst_rgb[pad_h : pad_h + new_h, pad_w : pad_w + new_w]
+        
+        if dst_bgr is not None and dst_bgr.shape[:2] == (new_h, new_w):
+            cv2.resize(frame, (new_w, new_h), dst=dst_bgr, interpolation=cv2.INTER_LINEAR)
+            cv2.cvtColor(dst_bgr, cv2.COLOR_BGR2RGB, dst=dst_slice)
+        else:
+            resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            cv2.cvtColor(resized, cv2.COLOR_BGR2RGB, dst=dst_slice)
+            
+        return dst_rgb, scale, (pad_w, pad_h)
+
+    # Slow fallback path (allocates memory)
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     pad_w = (target_size - new_w) // 2
     pad_h = (target_size - new_h) // 2
     padded = cv2.copyMakeBorder(
@@ -41,11 +65,11 @@ def letterbox_resize(
 def unletterbox_bbox(
     x1n: float, y1n: float, x2n: float, y2n: float,
     scale: float,
-    pad: tuple[int, int],
+    pad: Tuple[int, int],
     orig_w: int,
     orig_h: int,
     model_size: int = 640,
-) -> tuple[int, int, int, int]:
+) -> Tuple[int, int, int, int]:
     """Convert normalised model-space bbox back to original frame pixel coordinates.
 
     Args:

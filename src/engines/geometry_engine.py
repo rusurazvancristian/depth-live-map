@@ -2,7 +2,7 @@
 
 import json
 import logging
-import math
+from typing import Dict
 
 import numpy as np
 
@@ -11,8 +11,8 @@ from src.engines.base_engine import BaseEngine
 
 logger = logging.getLogger(__name__)
 
-_DISTANCE_MIN_M = 0.1
-_DISTANCE_MAX_M = 100.0
+_DISTANCE_MIN_M: float = 0.1
+_DISTANCE_MAX_M: float = 100.0
 
 
 class GeometryEngine(BaseEngine):
@@ -20,25 +20,16 @@ class GeometryEngine(BaseEngine):
 
     Reads:  bbox_height_px, class_name
     Writes: d_geometric_m
-
-    Formula:
-        d = (real_height_m * focal_length_px) / bbox_height_px
-
-    Edge cases handled:
-        - bbox_height_px < 1 px  -> d_geometric_m = NaN (avoid division by zero)
-        - class not in heights   -> uses _default height
-        - result clipped to [0.1, 100.0] metres for physical plausibility
-
-    Args:
-        focal_length_px: Camera f_y from intrinsic matrix K (pixels).
-        heights_path: Path to object_heights.json.
     """
+    _default_h: float
+    _heights: Dict[str, float]
+    _focal_length_px: float
 
     def __init__(self, focal_length_px: float, heights_path: str) -> None:
         with open(heights_path) as f:
             raw = json.load(f)
-        self._default_h: float = float(raw.get("_default", 0.50))
-        self._heights: dict[str, float] = {
+        self._default_h = float(raw.get("_default", 0.50))
+        self._heights = {
             k: float(v) for k, v in raw.items()
             if not k.startswith("_")
         }

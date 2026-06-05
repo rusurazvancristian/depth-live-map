@@ -1,11 +1,15 @@
 """Engine 3 — Monocular relative depth estimation via SCDepthV3 on Hailo NPU. [TRACK B]"""
 
 import logging
+from typing import Any, Optional, TYPE_CHECKING
 import numpy as np
 import cv2
 
-try:
+if TYPE_CHECKING:
     from hailo_platform import VDevice
+
+try:
+    from hailo_platform import VDevice as ActualVDevice
     HAILO_AVAILABLE = True
 except ImportError:
     HAILO_AVAILABLE = False
@@ -25,13 +29,25 @@ class DepthEngine(BaseEngine):
     Reads:  frame, bbox
     Writes: rel_depth_score, depth_variance
     """
+    hef_path: str
+    model_input_height: int
+    model_input_width: int
+    vdevice: Optional['VDevice']
+    _model: Optional[HEFModel]
+    _pipeline: Any
+    _pipeline_ctx: Any
+    _input_name: str
+    _output_name: str
+    
+    # Pre-allocated BGR batch buffer for zero-allocation reuse
+    _batch_bgr: Optional[np.ndarray]
 
     def __init__(
         self,
         hef_path: str,
         model_input_height: int = 256,
         model_input_width: int = 320,
-        vdevice: 'VDevice' = None,
+        vdevice: Optional['VDevice'] = None,
     ) -> None:
         """Initializes the DepthEngine.
         
@@ -48,6 +64,7 @@ class DepthEngine(BaseEngine):
         self._model = None
         self._pipeline = None
         self._pipeline_ctx = None
+        self._batch_bgr = None
 
         if HAILO_AVAILABLE:
             try:
@@ -109,12 +126,16 @@ class DepthEngine(BaseEngine):
 
             # 1. Run NPU inference or fallback to mock
             if HAILO_AVAILABLE and self._pipeline is not None:
-                # Resize to model input size (SCDepth expects HxW e.g. 256x320)
-                frame_resized = cv2.resize(frame_bgr, (self.model_input_width, self.model_input_height))
-                batch = np.expand_dims(frame_resized, axis=0)  # (1, H, W, 3) BGR uint8
+                # Lazy allocate batch buffer if not done
+                if self._batch_bgr is None:
+                    self._batch_bgr = np.empty((1, self.model_input_height, self.model_input_width, 3), dtype=np.uint8)
+                
+                # Resize directly to preallocated BGR batch slice
+                cv2.resize(frame_bgr, (self.model_input_width, self.model_input_height), 
+                           dst=self._batch_bgr[0], interpolation=cv2.INTER_LINEAR)
                 
                 # Run inference using the pre-activated pipeline context
-                raw_outputs = self._pipeline.infer({self._input_name: batch})
+                raw_outputs = self._pipeline.infer({self._input_name: self._batch_bgr})
                 raw_depth_map = raw_outputs[self._output_name][0]
                 
                 # Reshape to expected (H, W)
@@ -173,5 +194,4 @@ class DepthEngine(BaseEngine):
         return result
 
     def __del__(self) -> None:
-        # Stop session if still active
         self.stop()

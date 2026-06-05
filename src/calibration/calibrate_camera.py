@@ -6,7 +6,7 @@ Usage:
                                                   --square_mm 25.0
                                                   --out src/calibration/intrinsics.json
 
-Saves intrinsics.json with camera_matrix (3x3) and dist_coeffs (5,).
+Saves intrinsics.json with camera_matrix (3x3), dist_coeffs (5,), and resolution width/height.
 """
 
 import argparse
@@ -79,16 +79,20 @@ def calibrate_camera(
     return K, dist.flatten()
 
 
-def save_intrinsics(K: np.ndarray, dist: np.ndarray, out_path: str) -> None:
-    """Save camera matrix and distortion coefficients to JSON.
+def save_intrinsics(K: np.ndarray, dist: np.ndarray, width: int, height: int, out_path: str) -> None:
+    """Save camera matrix, distortion coefficients, and calibration resolution to JSON.
 
     Args:
         K: 3x3 camera intrinsic matrix.
         dist: Distortion coefficients array of shape (5,).
+        width: Width of the calibration images.
+        height: Height of the calibration images.
         out_path: Output JSON file path.
     """
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     data = {
+        "width": width,
+        "height": height,
         "camera_matrix": K.tolist(),
         "dist_coeffs": dist.tolist(),
         "focal_length_px": float(K[1, 1]),
@@ -112,4 +116,14 @@ if __name__ == "__main__":
         pattern_size=(args.pattern[0], args.pattern[1]),
         square_size_m=args.square_mm / 1000.0,
     )
-    save_intrinsics(K, dist, args.out)
+    
+    # Extract dimensions from the first calibration image to save along with intrinsics
+    import glob
+    paths = sorted(
+        glob.glob(os.path.join(args.images_dir, "*.jpg")) +
+        glob.glob(os.path.join(args.images_dir, "*.png"))
+    )
+    img = cv2.imread(paths[0])
+    h, w = img.shape[:2]
+    
+    save_intrinsics(K, dist, w, h, args.out)
