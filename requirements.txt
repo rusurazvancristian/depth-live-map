@@ -1,0 +1,4 @@
+picamera2
+opencv-python
+numpy
+# hailo_platform — instalat via: sudo apt install hailo-all

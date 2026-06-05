@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Depth Live Map
+Comment=Live depth estimation — Camera Module 3 + Hailo-8
+Icon=camera-photo
+Exec=bash -c 'DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/1000 python3 /home/martir/depth_live.py; read -p "Press Enter to close..."'
+Terminal=true
+Categories=Utility;Science;
+StartupNotify=true
