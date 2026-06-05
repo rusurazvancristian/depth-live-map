@@ -28,12 +28,12 @@ class FusionEngine(BaseEngine):
     Writes: final_distance_m, log_variance, confidence_68, confidence_95
     """
 
-    def __init__(self, onnx_path: str, norm_params_path: str = None) -> None:
+    def __init__(self, onnx_path: str, norm_path: str = None) -> None:
         """Initializes the FusionEngine.
         
         Args:
             onnx_path: Path to the exported fusion_mlp.onnx model.
-            norm_params_path: Optional path to the normalization parameters JSON file.
+            norm_path: Optional path to the normalization parameters JSON/Pt file.
                               If None, will look for a JSON file next to the ONNX model.
         """
         self.onnx_path = onnx_path
@@ -44,10 +44,10 @@ class FusionEngine(BaseEngine):
         self.std = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         
         # Find and load normalization parameters
-        if norm_params_path is None:
-            norm_params_path = os.path.splitext(onnx_path)[0] + "_norm.json"
+        if norm_path is None:
+            norm_path = os.path.splitext(onnx_path)[0] + "_norm.json"
             
-        self._load_norm_params(norm_params_path)
+        self._load_norm_params(norm_path)
 
         if ONNX_AVAILABLE:
             try:
@@ -61,14 +61,40 @@ class FusionEngine(BaseEngine):
                 self._session = None
 
     def _load_norm_params(self, path: str) -> None:
-        """Loads normalization mean and standard deviation from a JSON file."""
+        """Loads normalization mean and standard deviation from a JSON or PyTorch Pt file."""
+        if path.endswith(".pt"):
+            try:
+                import torch
+                if os.path.exists(path):
+                    data = torch.load(path, map_location="cpu")
+                    if isinstance(data, dict) and "mean" in data and "std" in data:
+                        # Extract mean
+                        m = data["mean"]
+                        self.mean = m.cpu().numpy() if hasattr(m, "cpu") else np.array(m, dtype=np.float32)
+                        # Extract std
+                        s = data["std"]
+                        self.std = s.cpu().numpy() if hasattr(s, "cpu") else np.array(s, dtype=np.float32)
+                        logger.info(f"Loaded normalization parameters from PyTorch file: {path}")
+                        return
+            except Exception as e:
+                logger.warning(f"Failed to load PyTorch norm file {path}: {e}")
+            
+            # Fall back to JSON paths if PyTorch failed or torch is not installed
+            json_path = os.path.splitext(path)[0] + ".json"
+            if os.path.exists(json_path):
+                path = json_path
+            else:
+                json_path_alt = os.path.splitext(path)[0] + "_norm.json"
+                if os.path.exists(json_path_alt):
+                    path = json_path_alt
+
         if os.path.exists(path):
             try:
                 with open(path, "r") as f:
                     data = json.load(f)
                 self.mean = np.array(data["mean"], dtype=np.float32)
                 self.std = np.array(data["std"], dtype=np.float32)
-                logger.info(f"Loaded normalization parameters from {path}")
+                logger.info(f"Loaded normalization parameters from JSON file: {path}")
             except Exception as e:
                 logger.warning(f"Error reading normalization config {path}, using defaults: {e}")
         else:

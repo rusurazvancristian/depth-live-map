@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 from data_contract import FrameResult
 from src.engines.base_engine import BaseEngine
 from src.engines.depth_engine import DepthEngine
+from src.engines.fusion_engine import FusionEngine
 from src.mlp_training.model import DistanceFusionMLP, gaussian_nll_loss
 
 def test_mlp_output_shape():
@@ -89,3 +90,42 @@ def test_depth_engine_interface():
     assert not math.isnan(output.rel_depth_score), "rel_depth_score must be computed and populated."
     assert not math.isnan(output.depth_variance), "depth_variance must be computed and populated."
     assert 0.0 <= output.rel_depth_score <= 1.0, f"rel_depth_score must be normalized in [0, 1], got {output.rel_depth_score}."
+
+
+def test_fusion_engine_interface():
+    """Verifies that FusionEngine conforms to the BaseEngine contract.
+    
+    Data Contract Verification:
+        - FusionEngine must inherit from BaseEngine.
+        - FusionEngine must accept a FrameResult and return a FrameResult.
+        - Output FrameResult must contain valid float distance and confidence estimations.
+    """
+    # Verify class inheritance
+    assert issubclass(FusionEngine, BaseEngine), "FusionEngine must inherit from BaseEngine."
+    
+    # Instantiate engine (non-ONNX fallback mode)
+    engine = FusionEngine(onnx_path="models/test_fusion_mlp.onnx", norm_path=None)
+    
+    # Create test FrameResult input contract
+    input_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    result = FrameResult(
+        frame=input_frame,
+        timestamp=100.0,
+        bbox=(50, 50, 150, 150),
+        bbox_height_px=100.0,
+        class_id=0,
+        class_name="person",
+        d_geometric_m=5.0,
+        rel_depth_score=0.5,
+        depth_variance=0.01
+    )
+    
+    # Process through the fusion engine
+    output = engine.process(result)
+    
+    # Verify outputs conform to contract
+    assert isinstance(output, FrameResult), "Engine process method must return a FrameResult instance."
+    assert not math.isnan(output.final_distance_m), "final_distance_m must be computed."
+    assert not math.isnan(output.log_variance), "log_variance must be computed."
+    assert output.confidence_68[0] <= output.final_distance_m <= output.confidence_68[1]
+    assert output.confidence_95[0] <= output.final_distance_m <= output.confidence_95[1]
