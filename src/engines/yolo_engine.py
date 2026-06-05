@@ -116,10 +116,11 @@ class YOLOEngine(BaseEngine):
                 return result
 
             class_id, det = best
-            x1 = int(np.clip(det[0] * orig_w, 0, orig_w - 1))
-            y1 = int(np.clip(det[1] * orig_h, 0, orig_h - 1))
-            x2 = int(np.clip(det[2] * orig_w, 0, orig_w - 1))
-            y2 = int(np.clip(det[3] * orig_h, 0, orig_h - 1))
+            # Hailo NMS output order: [y1n, x1n, y2n, x2n, score]
+            y1 = int(np.clip(det[0] * orig_h, 0, orig_h - 1))
+            x1 = int(np.clip(det[1] * orig_w, 0, orig_w - 1))
+            y2 = int(np.clip(det[2] * orig_h, 0, orig_h - 1))
+            x2 = int(np.clip(det[3] * orig_w, 0, orig_w - 1))
 
             result.class_id = class_id
             result.class_name = COCO_CLASSES[class_id] if class_id < len(COCO_CLASSES) else str(class_id)
