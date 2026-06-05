@@ -1,0 +1,17 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest cache
+.pytest_cache/
+
+# ONNX/HEF models (to prevent pushing large binary files)
+models/*.onnx
+models/*.hef
+models/*_norm.json
+
+# Local virtual environment
+.venv/
+venv/
+env/
