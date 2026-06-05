@@ -1,4 +1,5 @@
 picamera2
 opencv-python
 numpy
-# hailo_platform — instalat via: sudo apt install hailo-all
+scipy>=1.11
+# hailo_platform — installed via: sudo apt install hailo-all

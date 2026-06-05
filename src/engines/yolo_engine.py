@@ -112,8 +112,10 @@ class YOLOEngine(BaseEngine):
                 return result
 
             class_id, det = best
+            # Hailo NMS output coordinates are in y1, x1, y2, x2 (yxyx) format
+            y1n, x1n, y2n, x2n = det[0], det[1], det[2], det[3]
             x1, y1, x2, y2 = unletterbox_bbox(
-                det[0], det[1], det[2], det[3],
+                x1n, y1n, x2n, y2n,
                 scale, pad, orig_w, orig_h, self._input_size,
             )
 

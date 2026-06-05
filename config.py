@@ -21,8 +21,8 @@ class Config:
     principal_point: tuple[float, float] = (320.0, 240.0)
 
     # ── Model paths ──────────────────────────────────────────────────────────
-    yolo_hef_path: str = "/usr/share/hailo-models/yolov8s_h8.hef"
-    depth_hef_path: str = "/usr/share/hailo-models/fast_depth_h8.hef"
+    yolo_hef_path: str = "models/yolo26n.hef"
+    depth_hef_path: str = "models/sc_depth_v3.hef"
     fusion_onnx_path: str = "models/fusion_mlp.onnx"
     fusion_norm_path: str = "models/fusion_norm.pt"
     heights_json: str = "src/calibration/object_heights.json"
@@ -30,7 +30,8 @@ class Config:
 
     # ── Detection ────────────────────────────────────────────────────────────
     det_conf: float = 0.5
-    depth_input_size: int = 224
+    depth_input_height: int = 256
+    depth_input_width: int = 320
 
     # ── Display ──────────────────────────────────────────────────────────────
     display_width: int = 1280

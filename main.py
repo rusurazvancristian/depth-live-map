@@ -7,7 +7,60 @@ import time
 
 import cv2
 import numpy as np
-from picamera2 import Picamera2
+
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("picamera2 not found. Initialising mock Picamera2 using system webcam / animated generator.")
+    
+    class Picamera2:
+        def __init__(self):
+            # Try to open the default system webcam
+            self.cap = cv2.VideoCapture(0)
+            self.dummy_frame = None
+            
+        def configure(self, cam_config):
+            pass
+            
+        def start(self):
+            if not self.cap.isOpened():
+                logger.warning("Could not open system webcam. Generating synthetic animated test frames.")
+                # Create a black frame as template
+                self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            
+        def capture_array(self) -> np.ndarray:
+            if self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret:
+                    # OpenCV reads BGR, Picamera2 outputs RGB
+                    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Synthetic animated test frame with a moving "person"
+            frame = self.dummy_frame.copy()
+            # Draw moving circles (simulating walking person/dog)
+            t = time.time()
+            x = int(320 + 120 * math.cos(t * 0.8))
+            y = int(240 + 40 * math.sin(t * 1.6))
+            # Background grid to help depth perception
+            for i in range(0, 640, 80):
+                cv2.line(frame, (i, 0), (i, 480), (30, 30, 30), 1)
+            for j in range(0, 480, 60):
+                cv2.line(frame, (0, j), (640, j), (30, 30, 30), 1)
+            # Simulated person (red rectangle/circle)
+            cv2.rectangle(frame, (x-40, y-80), (x+40, y+80), (0, 0, 200), -1)
+            # Simulated head
+            cv2.circle(frame, (x, y-100), 25, (0, 0, 200), -1)
+            # Simulated text label
+            cv2.putText(frame, "TEST MODE: MOCK INPUT (ANIMATED TARGET)", (20, 35),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+            return frame
+            
+        def stop(self):
+            if self.cap.isOpened():
+                self.cap.release()
 
 from config import Config
 from data_contract import FrameResult
@@ -61,14 +114,21 @@ def build_pipeline(config: Config) -> list[BaseEngine]:
     """
     focal_length_px = load_focal_length(config)
 
+    yolo_eng = YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf)
+    shared_device = yolo_eng._model._device if hasattr(yolo_eng, "_model") and hasattr(yolo_eng._model, "_device") else None
+
     engines: list[BaseEngine] = [
-        YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf),
+        yolo_eng,
         GeometryEngine(focal_length_px=focal_length_px, heights_path=config.heights_json),
     ]
 
     if _DEPTH_AVAILABLE:
-        engines.append(DepthEngine(hef_path=config.depth_hef_path,
-                                   model_input_size=config.depth_input_size))
+        engines.append(DepthEngine(
+            hef_path=config.depth_hef_path,
+            model_input_height=config.depth_input_height,
+            model_input_width=config.depth_input_width,
+            vdevice=shared_device
+        ))
     if _FUSION_AVAILABLE:
         engines.append(FusionEngine(onnx_path=config.fusion_onnx_path,
                                     norm_path=config.fusion_norm_path))
