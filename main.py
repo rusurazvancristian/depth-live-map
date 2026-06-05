@@ -148,7 +148,7 @@ def init_camera(config: Config) -> Picamera2:
     """
     cam = Picamera2()
     cam_config = cam.create_preview_configuration(
-        main={"size": (config.cam_width, config.cam_height), "format": "BGR888"},
+        main={"size": (config.cam_width, config.cam_height), "format": "RGB888"},
         controls={"FrameRate": config.cam_fps},
     )
     cam.configure(cam_config)
@@ -177,7 +177,7 @@ def main() -> None:
 
     try:
         while True:
-            frame = cam.capture_array()
+            frame = cv2.cvtColor(cam.capture_array(), cv2.COLOR_RGB2BGR)
             result = FrameResult(frame=frame, timestamp=time.perf_counter())
             result = run_pipeline(engines, result)
 
