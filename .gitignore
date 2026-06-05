@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 models/*.onnx
 models/*.pt
+hailort.log
