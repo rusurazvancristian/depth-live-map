@@ -349,7 +349,7 @@ def main() -> None:
                     lineType=cv2.LINE_AA,
                 )
 
-                cv2.imshow(window_name, hud_frame)
+                cv2.imshow(window_name, cv2.cvtColor(hud_frame, cv2.COLOR_BGR2RGB))
 
                 # 9. Key press actions
                 key = cv2.waitKey(1) & 0xFF
