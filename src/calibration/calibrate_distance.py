@@ -67,7 +67,7 @@ class _Mouse:
 def _open_camera():
     cam = Picamera2()
     cfg = cam.create_preview_configuration(
-        main={"size": (CAM_W, CAM_H), "format": "BGR888"},
+        main={"size": (CAM_W, CAM_H), "format": "RGB888"},
         controls={"FrameRate": 30, "AfMode": 0, "LensPosition": 0.0},
     )
     cam.configure(cfg)
@@ -76,7 +76,7 @@ def _open_camera():
     return cam
 
 
-def _overlay_text(img, lines, y0=30, color=(0, 220, 255)):
+def _overlay_text(img, lines, y0=30, color=(255, 220, 0)):
     for i, line in enumerate(lines):
         cv2.putText(img, line, (10, y0 + i * 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
@@ -85,8 +85,8 @@ def _overlay_text(img, lines, y0=30, color=(0, 220, 255)):
 
 
 def _show(img):
-    """Display BGR image on Wayland (imshow expects RGB)."""
-    cv2.imshow(WINDOW, cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    """Display RGB image — RGB888 camera format, no conversion needed."""
+    cv2.imshow(WINDOW, img)
 
 
 def main():
@@ -106,44 +106,59 @@ def main():
 
     try:
         while True:
-            key = cv2.waitKey(1) & 0xFF
+            # ── Build frame to display ────────────────────────────────────
+            if state == "LIVE":
+                frame = cam.capture_array()
+                vis = frame.copy()
+                _overlay_text(vis, ["Hold A5 paper at 1.0m",
+                                    "SPACE = freeze   Q = quit"])
+                cx, cy = CAM_W // 2, CAM_H // 2
+                cv2.line(vis, (cx-20, cy), (cx+20, cy), (0, 255, 0), 1)
+                cv2.line(vis, (cx, cy-20), (cx, cy+20), (0, 255, 0), 1)
 
-            # ── Q always quits ────────────────────────────────────────────
+            elif state == "FROZEN":
+                vis = frozen.copy()
+                _overlay_text(vis, ["Draw rectangle around paper",
+                                    "ENTER = accept   ESC = retry   Q = quit"])
+                roi = mouse.roi()
+                if roi:
+                    x1, y1, x2, y2 = roi
+                    cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            elif state == "RESULT":
+                vis = frozen.copy()
+                x1, y1, x2, y2 = mouse.roi()
+                rw, rh = x2 - x1, y2 - y1
+                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                verify = (intrinsics["f_y"] * PAPER_H_M) / rh
+                err_pct = abs(verify - KNOWN_DIST_M) / KNOWN_DIST_M * 100
+                _overlay_text(vis, [
+                    f"ROI: {rw} x {rh} px",
+                    f"f_y = {intrinsics['f_y']:.1f} px",
+                    f"f_x = {intrinsics['f_x']:.1f} px",
+                    f"Verify: {verify:.3f} m  (err {err_pct:.1f}%)",
+                    "ENTER = save   ESC = retry   Q = quit",
+                ], color=(100, 255, 100))
+
+            # ── Display first, then collect key ───────────────────────────
+            _show(vis)
+            key = cv2.waitKey(30) & 0xFF  # 30ms: pumps GUI events reliably
+
+            # ── Global keys ───────────────────────────────────────────────
             if key == ord("q"):
                 logger.info("Quit without saving.")
                 break
 
-            # ── LIVE: stream camera, wait for SPACE ───────────────────────
+            # ── State transitions ─────────────────────────────────────────
             if state == "LIVE":
-                frame = cam.capture_array()
-                vis = frame.copy()
-                _overlay_text(vis, ["Hold A5 paper at 1.0m", "SPACE = freeze   Q = quit"])
-                cx, cy = CAM_W // 2, CAM_H // 2
-                cv2.line(vis, (cx-20, cy), (cx+20, cy), (0,255,0), 1)
-                cv2.line(vis, (cx, cy-20), (cx, cy+20), (0,255,0), 1)
-                _show(vis)
-
                 if key == ord(" "):
                     frozen = frame.copy()
                     mouse.reset()
                     state = "FROZEN"
                     logger.info("Frozen. Draw rectangle around the paper.")
 
-            # ── FROZEN: show frozen frame, user draws rectangle ───────────
             elif state == "FROZEN":
-                vis = frozen.copy()
-                _overlay_text(vis, ["Draw rectangle around paper",
-                                    "ESC = retry live   Q = quit"])
-
-                roi = mouse.roi()
-                if roi:
-                    x1, y1, x2, y2 = roi
-                    cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                _show(vis)
-
-                # Accept completed rectangle with ENTER
-                if key == 13 and mouse.done:
+                if key == 13 and mouse.done:  # ENTER
                     roi = mouse.roi()
                     if roi is None:
                         logger.warning("Rectangle too small — draw again.")
@@ -163,42 +178,19 @@ def main():
                             "paper_h_mm": int(PAPER_H_M * 1000),
                             "known_dist_m": KNOWN_DIST_M,
                         }
-                        verify = (f_y * PAPER_H_M) / rh
-                        logger.info("f_y=%.1f  f_x=%.1f  verify=%.3fm", f_y, f_x, verify)
+                        logger.info("f_y=%.1f  f_x=%.1f", f_y, f_x)
                         state = "RESULT"
-
                 elif key == 27:  # ESC
                     mouse.reset()
                     state = "LIVE"
                     logger.info("Retrying...")
 
-            # ── RESULT: show summary, wait for ENTER to save or ESC retry ─
             elif state == "RESULT":
-                vis = frozen.copy()
-                x1, y1, x2, y2 = mouse.roi()
-                rw, rh = x2 - x1, y2 - y1
-                cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-                verify = (intrinsics["f_y"] * PAPER_H_M) / rh
-                err_pct = abs(verify - KNOWN_DIST_M) / KNOWN_DIST_M * 100
-
-                _overlay_text(vis, [
-                    f"ROI: {rw} x {rh} px",
-                    f"f_y = {intrinsics['f_y']:.1f} px",
-                    f"f_x = {intrinsics['f_x']:.1f} px",
-                    f"Verify: {verify:.3f}m  (err {err_pct:.1f}%)",
-                    "ENTER = save   ESC = retry   Q = quit",
-                ], color=(0, 255, 100))
-                _show(vis)
-
                 if key == 13:  # ENTER — save
                     with open(OUT_PATH, "w") as f:
                         json.dump(intrinsics, f, indent=2)
-                    logger.info("Saved to %s", OUT_PATH)
-                    logger.info("  f_y=%.1f px  f_x=%.1f px  verify=%.3fm",
-                                intrinsics["f_y"], intrinsics["f_x"], verify)
+                    logger.info("Saved → %s  (f_y=%.1f px)", OUT_PATH, intrinsics["f_y"])
                     break
-
                 elif key == 27:  # ESC — retry
                     mouse.reset()
                     intrinsics = None
