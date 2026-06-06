@@ -17,3 +17,4 @@ models/*_norm.json
 .venv/
 venv/
 env/
+hailort.log
