@@ -1,72 +1,27 @@
-"""Main orchestrator — camera loop + 4-engine pipeline + display. [TRACK A]"""
+"""Main orchestrator — model downloads, multiplexer session, camera loop, tracking pipeline, and live HUD display."""
 
 import json
 import logging
 import math
 import time
-
+import os
 import cv2
 import numpy as np
 
-try:
-    from picamera2 import Picamera2
-    PICAMERA2_AVAILABLE = True
-except ImportError:
-    PICAMERA2_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("picamera2 not found. Initialising mock Picamera2 using system webcam / animated generator.")
-    
-    class Picamera2:
-        def __init__(self):
-            # Try to open the default system webcam
-            self.cap = cv2.VideoCapture(0)
-            self.dummy_frame = None
-            
-        def configure(self, cam_config):
-            pass
-            
-        def start(self):
-            if not self.cap.isOpened():
-                logger.warning("Could not open system webcam. Generating synthetic animated test frames.")
-                # Create a black frame as template
-                self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            
-        def capture_array(self) -> np.ndarray:
-            if self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if ret:
-                    # OpenCV reads BGR, Picamera2 outputs RGB
-                    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Synthetic animated test frame with a moving "person"
-            frame = self.dummy_frame.copy()
-            # Draw moving circles (simulating walking person/dog)
-            t = time.time()
-            x = int(320 + 120 * math.cos(t * 0.8))
-            y = int(240 + 40 * math.sin(t * 1.6))
-            # Background grid to help depth perception
-            for i in range(0, 640, 80):
-                cv2.line(frame, (i, 0), (i, 480), (30, 30, 30), 1)
-            for j in range(0, 480, 60):
-                cv2.line(frame, (0, j), (640, j), (30, 30, 30), 1)
-            # Simulated person (red rectangle/circle)
-            cv2.rectangle(frame, (x-40, y-80), (x+40, y+80), (0, 0, 200), -1)
-            # Simulated head
-            cv2.circle(frame, (x, y-100), 25, (0, 0, 200), -1)
-            # Simulated text label
-            cv2.putText(frame, "TEST MODE: MOCK INPUT (ANIMATED TARGET)", (20, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
-            return frame
-            
-        def stop(self):
-            if self.cap.isOpened():
-                self.cap.release()
-
-from config import Config
-from data_contract import FrameResult
-from src.engines.base_engine import BaseEngine
-from src.engines.yolo_engine import YOLOEngine
-from src.engines.geometry_engine import GeometryEngine
+# Config and data contract
+from config import Config, MODEL_REGISTRY
+from data_contract import FrameResult, TrackedObject
+from src.setup.model_downloader import ensure_models
+from src.hailo_inference.hef_loader import HailoMultiplexer
+from src.engines import (
+    YOLOEngine,
+    GeometryEngine,
+    DepthEngine,
+    KalmanDepthEngine,
+    ReIDEngine,
+)
+from src.tracking import ByteTracker, TargetLock
+from src.utils.visualization import draw_hud
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,28 +29,72 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Lazy imports for Track B engines (not available until Track B implements them) ──
 try:
-    from src.engines.depth_engine import DepthEngine
-    _DEPTH_AVAILABLE = True
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
 except ImportError:
-    _DEPTH_AVAILABLE = False
-    logger.warning("DepthEngine not available — running without depth cue.")
+    PICAMERA2_AVAILABLE = False
+    logger.warning("picamera2 not found. Initialising mock Picamera2 using system webcam / synthetic generator.")
 
-try:
-    from src.engines.fusion_engine import FusionEngine
-    _FUSION_AVAILABLE = True
-except ImportError:
-    _FUSION_AVAILABLE = False
-    logger.warning("FusionEngine not available — using GeometryEngine output as final distance.")
+    class Picamera2:
+        """Mock Picamera2 implementation using OpenCV webcam or synthetic animated frame generator."""
+
+        def __init__(self) -> None:
+            self.cap = cv2.VideoCapture(0)
+            self.dummy_frame = None
+
+        def configure(self, cam_config) -> None:
+            pass
+
+        def start(self) -> None:
+            if not self.cap.isOpened():
+                logger.warning("Could not open system webcam. Generating synthetic test frames.")
+                self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def capture_array(self) -> np.ndarray:
+            if self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret:
+                    # Picamera2 outputs RGB, OpenCV reads BGR
+                    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Generate synthetic target frame (simulated human walking)
+            frame = self.dummy_frame.copy()
+            t = time.time()
+            # Walk left/right
+            x = int(320 + 150 * math.sin(t * 0.8))
+            y = int(240 + 20 * math.cos(t * 1.6))
+            
+            # Draw room grid lines
+            for i in range(0, 640, 80):
+                cv2.line(frame, (i, 0), (i, 480), (35, 35, 35), 1)
+            for j in range(0, 480, 60):
+                cv2.line(frame, (0, j), (640, j), (35, 35, 35), 1)
+                
+            # Simulated person target (red block)
+            cv2.rectangle(frame, (x - 45, y - 90), (x + 45, y + 90), (0, 0, 180), -1)
+            cv2.circle(frame, (x, y - 110), 30, (0, 0, 180), -1)
+            
+            # Synthetic helper text
+            cv2.putText(
+                frame,
+                "DEMO MODE: SYNTHETIC TARGET GENERATOR",
+                (15, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 255, 255),
+                1,
+                lineType=cv2.LINE_AA,
+            )
+            return frame
+
+        def stop(self) -> None:
+            if self.cap.isOpened():
+                self.cap.release()
 
 
 def load_focal_length(config: Config) -> float:
-    """Load f_y from intrinsics.json if available, else use config default.
-    
-    Dynamically scales the focal length if the calibration image resolution 
-    differs from the run-time camera resolution.
-    """
+    """Load f_y from intrinsics.json if calibrated, otherwise scale or fallback to config default."""
     try:
         with open(config.intrinsics_json) as f:
             data = json.load(f)
@@ -104,7 +103,7 @@ def load_focal_length(config: Config) -> float:
         calib_w = data.get("width")
         calib_h = data.get("height")
         if calib_w and calib_h and (calib_w != config.cam_width or calib_h != config.cam_height):
-            # Scale f_y based on the height ratio
+            # Scale f_y proportionally with frame height change
             scale = config.cam_height / calib_h
             f_y_scaled = f_y * scale
             logger.info(
@@ -117,211 +116,274 @@ def load_focal_length(config: Config) -> float:
         return f_y
     except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
         logger.warning(
-            "Could not load intrinsics config (%s) — using default f_y=%.1f. Run calibrate_camera.py!",
+            "Could not load calibration intrinsics (%s) — using default config focal length %.1f.",
             e,
             config.focal_length_px,
         )
         return config.focal_length_px
 
 
-def build_pipeline(config: Config, shared_device) -> list[BaseEngine]:
-    """Instantiate and return all available engines in order.
-
-    Engines 3 and 4 are conditionally loaded — if Track B hasn't implemented
-    them yet, the pipeline degrades gracefully to geometry-only distance.
-    """
-    focal_length_px = load_focal_length(config)
-
-    engines: list[BaseEngine] = [
-        YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf, device=shared_device),
-        GeometryEngine(focal_length_px=focal_length_px, heights_path=config.heights_json),
-    ]
-
-    if _DEPTH_AVAILABLE:
-        engines.append(DepthEngine(
-            hef_path=config.depth_hef_path,
-            model_input_height=config.depth_input_height,
-            model_input_width=config.depth_input_width,
-            vdevice=shared_device
-        ))
-    if _FUSION_AVAILABLE:
-        engines.append(FusionEngine(onnx_path=config.fusion_onnx_path,
-                                    norm_path=config.fusion_norm_path))
-
-    logger.info("Pipeline: %s", " -> ".join(e.name for e in engines))
-    return engines
-
-
-def run_pipeline(engines: list[BaseEngine], result: FrameResult) -> FrameResult:
-    """Chain engines sequentially. Pure function over the engine list.
-
-    Args:
-        engines: Ordered list of BaseEngine instances.
-        result: Initial FrameResult with frame and timestamp populated.
-
-    Returns:
-        FrameResult after all engines have processed it.
-    """
-    for engine in engines:
-        result = engine.process(result)
-    return result
-
-
-def draw_overlay(frame: np.ndarray, result: FrameResult, fps: float) -> np.ndarray:
-    """Draw bounding box, distance label, and FPS on the frame.
-
-    Args:
-        frame: BGR image to draw on (copied internally).
-        result: Processed FrameResult.
-        fps: Current frames per second.
-
-    Returns:
-        BGR image with overlay drawn.
-    """
-    vis = frame.copy()
-    h, w = vis.shape[:2]
-
-    # FPS
-    cv2.putText(vis, f"{fps:.1f} FPS", (w - 100, 28),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1, cv2.LINE_AA)
-
-    if result.class_id < 0:
-        cv2.putText(vis, "No detection", (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 220), 2, cv2.LINE_AA)
-        return vis
-
-    x1, y1, x2, y2 = result.bbox
-    cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-    # Distance — prefer Fusion, fall back to Geometry
-    if not math.isnan(result.final_distance_m):
-        dist_m = result.final_distance_m
-        lo, hi = result.confidence_95
-        dist_text = f"{dist_m:.2f}m  [{lo:.1f}-{hi:.1f}]"
-    elif not math.isnan(result.d_geometric_m):
-        dist_text = f"{result.d_geometric_m:.2f}m (geo)"
-    else:
-        dist_text = "?.??m"
-
-    label = f"{result.class_name} {result.det_confidence:.2f}  {dist_text}"
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-    cv2.rectangle(vis, (x1, y1 - th - 6), (x1 + tw + 4, y1), (0, 255, 0), -1)
-    cv2.putText(vis, label, (x1 + 2, y1 - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
-
-    return vis
-
-
 def init_camera(config: Config) -> Picamera2:
-    """Initialise and start the Camera Module 3.
-
-    Args:
-        config: Config instance with cam_width, cam_height, cam_fps.
-
-    Returns:
-        Running Picamera2 instance.
-    """
+    """Initialize Raspberry Pi 5 Camera Module 3 or fallback mock camera."""
     cam = Picamera2()
-    cam_config = cam.create_preview_configuration(
-        main={"size": (config.cam_width, config.cam_height), "format": "RGB888"},
-        controls={"FrameRate": config.cam_fps},
-    )
-    cam.configure(cam_config)
+    if PICAMERA2_AVAILABLE:
+        cam_config = cam.create_preview_configuration(
+            main={"size": (config.cam_width, config.cam_height), "format": "RGB888"},
+            controls={"FrameRate": config.cam_fps},
+        )
+        cam.configure(cam_config)
     cam.start()
-    time.sleep(1.0)  # warm up
-    logger.info("Camera started: %dx%d @ %d FPS", config.cam_width, config.cam_height, config.cam_fps)
+    # Warm up camera sensor
+    time.sleep(1.0)
+    logger.info("Camera online: %dx%d @ %d FPS", config.cam_width, config.cam_height, config.cam_fps)
     return cam
 
 
 def main() -> None:
     config = Config()
-    
-    # 1. Initialize VDevice at top level for proper NPU multi-network scheduling & safety
-    shared_device = None
+
+    # 1. Verify / download model HEF files
+    logger.info("Ensuring all model files exist in %s...", config.models_dir)
     try:
-        from hailo_platform import VDevice, HailoSchedulingAlgorithm
-        params = VDevice.create_params()
-        params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
-        shared_device = VDevice(params)
-        logger.info("Created shared VDevice with ROUND_ROBIN scheduling.")
-    except ImportError:
-        logger.warning("hailo_platform not found. Running without NPU device context.")
+        ensure_models(config.models_dir, MODEL_REGISTRY)
     except Exception as e:
-        logger.error(f"Failed to create shared VDevice: {e}. Running without NPU.")
+        logger.critical("Failed to verify/download HEFs: %s", e)
+        return
 
-    cam = None
-    engines = []
-    
-    try:
-        # 2. Open camera context
-        cam = init_camera(config)
+    # Determine focal length
+    focal_length_px = load_focal_length(config)
+
+    # Dictionary mapping model names to HEF files for multiplexer
+    model_paths = {
+        "yolo": config.yolo_hef_path,
+        "depth": config.depth_hef_path,
+        "reid": config.reid_hef_path,
+    }
+
+    # 2. Setup NPU Multiplexer Context
+    logger.info("Initializing HailoMultiplexer with models: %s", list(model_paths.keys()))
+    with HailoMultiplexer(model_paths) as multiplexer:
         
-        # 3. Build pipeline using shared NPU context
-        engines = build_pipeline(config, shared_device)
+        # 3. Instantiate pipeline engines
+        yolo_engine = YOLOEngine(
+            multiplexer,
+            model_name="yolo",
+            conf_threshold=config.det_conf,
+        )
+        geometry_engine = GeometryEngine(
+            focal_length_px=focal_length_px,
+            heights_path=config.heights_json,
+        )
+        depth_engine = DepthEngine(
+            multiplexer,
+            model_name="depth",
+            input_h=config.depth_input_height,
+            input_w=config.depth_input_width,
+        )
+        kalman_depth_engine = KalmanDepthEngine(
+            q_scale=config.kalman_process_noise,
+            geom_coeff=config.kalman_geom_noise_coeff,
+            depth_coeff=config.kalman_depth_noise_coeff,
+            scale_alpha=config.kalman_scale_ema_alpha,
+            gate_chi2=config.kalman_gate_chi2,
+        )
+        reid_engine = ReIDEngine(
+            multiplexer,
+            model_name="reid",
+            input_h=config.reid_input_height,
+            input_w=config.reid_input_width,
+            embedding_dim=config.reid_embedding_dim,
+        )
 
-        # 4. Start lifecycle sessions on all engines (allocates VStreams once)
-        for engine in engines:
-            engine.start()
+        # 4. Instantiate ByteTracker and TargetLock state machine
+        byte_tracker = ByteTracker(
+            high_thresh=config.track_high_thresh,
+            low_thresh=config.track_low_thresh,
+            match_thresh=config.track_match_thresh,
+            buffer=config.track_buffer,
+            min_hits=config.track_min_hits,
+        )
+        
+        target_lock = TargetLock(
+            target_class=config.target_class_name,
+            stable_frames=config.golden_template_frames,
+            cosine_thresh=config.reid_cosine_threshold,
+            search_timeout=config.reid_search_timeout,
+        )
 
-        cv2.namedWindow("How Far?", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("How Far?", config.display_width, config.display_height)
+        # Start Camera
+        cam = init_camera(config)
+
+        # Open Window
+        window_name = "Depth Live Tracker HUD — Hailo-8"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, config.display_width, config.display_height)
 
         fps = 0.0
         t_prev = time.perf_counter()
+        
+        logger.info("HUD Pipeline running. Press [T] to manually lock on target, [Q] to quit.")
 
-        logger.info("Pipeline running. Press Q to quit.")
-
-        # Pre-allocate BGR frame buffer for zero-allocation reuse
+        # Cache BGR frame buffer
         frame_bgr = None
+        reid_vectors: Dict[int, np.ndarray] = {}
 
-        while True:
-            raw_frame = cam.capture_array()
-            
-            # Lazy allocate or adjust size to match captured frame resolution
-            if frame_bgr is None or frame_bgr.shape != raw_frame.shape:
-                frame_bgr = np.empty(raw_frame.shape, dtype=np.uint8)
+        try:
+            while True:
+                # Capture frame (RGB)
+                rgb_frame = cam.capture_array()
                 
-            # Convert color in-place to pre-allocated buffer
-            cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR, dst=frame_bgr)
-            
-            result = FrameResult(frame=frame_bgr, timestamp=time.perf_counter())
-            result = run_pipeline(engines, result)
+                # Check frame shape and allocate/lazy reallocate
+                if frame_bgr is None or frame_bgr.shape != rgb_frame.shape:
+                    frame_bgr = np.empty(rgb_frame.shape, dtype=np.uint8)
 
-            t_now = time.perf_counter()
-            fps = 0.9 * fps + 0.1 * (1.0 / max(t_now - t_prev, 1e-6))
-            t_prev = t_now
-
-            vis = draw_overlay(frame_bgr, result, fps)
-            cv2.imshow("How Far?", vis)
-
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-
-    finally:
-        # 5. Stop lifecycle sessions on all engines (deallocates VStreams)
-        for engine in engines:
-            try:
-                engine.stop()
-            except Exception as e:
-                logger.warning(f"Error stopping engine {engine.name}: {e}")
-
-        # 6. Stop camera to release file descriptor lock in OS
-        if cam is not None:
-            try:
-                cam.stop()
-            except Exception as e:
-                logger.warning(f"Error stopping camera: {e}")
+                # Convert RGB -> BGR in-place
+                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=frame_bgr)
                 
-        # 7. Clean up shared VDevice
-        if shared_device is not None:
-            try:
-                del shared_device
-                logger.info("Shared VDevice context deleted.")
-            except Exception as e:
-                logger.warning(f"Error deleting shared VDevice: {e}")
+                timestamp = time.perf_counter()
                 
-        cv2.destroyAllWindows()
-        logger.info("Pipeline stopped.")
+                # Create result container
+                result = FrameResult(frame=frame_bgr, timestamp=timestamp)
+
+                # ── STAGE 1: YOLO Object Detection ──
+                result = yolo_engine.process(result)
+
+                # ── STAGE 2: ByteTrack Multi-Object Association ──
+                if result.detections:
+                    dets = np.array(
+                        [list(d.bbox) + [d.confidence] for d in result.detections],
+                        dtype=np.float32
+                    )
+                    cids = np.array([d.class_id for d in result.detections], dtype=np.int32)
+                else:
+                    dets = np.empty((0, 5), dtype=np.float32)
+                    cids = np.empty((0,), dtype=np.int32)
+                
+                result.tracked_objects = byte_tracker.update(dets, cids)
+
+                # ── STAGE 3: Geometry-based Distance Calculation ──
+                result = geometry_engine.process(result)
+
+                # ── STAGE 4: SCDepthV3 Depth Estimation ──
+                result = depth_engine.process(result)
+
+                # ── STAGE 5: Kalman Depth Fusion ──
+                result = kalman_depth_engine.process(result)
+
+                # ── STAGE 6: ReID Feature Extraction for target lock matching ──
+                # Gather bboxes for tracked objects of target class
+                target_bboxes = [
+                    (obj.track_id, obj.bbox)
+                    for obj in result.tracked_objects
+                    if obj.class_name == config.target_class_name
+                ]
+                
+                # Extract embeddings in batch
+                current_embeddings = reid_engine.extract_batch(frame_bgr, target_bboxes)
+                for tid, emb in current_embeddings.items():
+                    reid_vectors[tid] = emb
+
+                # ── STAGE 7: Target Lock State Machine ──
+                target_lock.update(result.tracked_objects, reid_vectors)
+                
+                # Populate target details back to FrameResult
+                result.target_id = target_lock.target_id
+                result.target_status = target_lock.status
+                
+                # Identify matched target object and verify arrival trigger
+                target_obj = next(
+                    (obj for obj in result.tracked_objects if obj.track_id == result.target_id),
+                    None
+                )
+                
+                if target_obj is not None:
+                    result.target_distance_m = target_obj.kalman_distance_m
+                    
+                    # Verify arrival conditions: target distance <= 0.5m and bbox center centered
+                    x1, y1, x2, y2 = target_obj.bbox
+                    tx_center = (x1 + x2) / 2.0
+                    ty_center = (y1 + y2) / 2.0
+                    
+                    # Centered definition: within tolerance from center
+                    frame_w, frame_h = config.cam_width, config.cam_height
+                    dx = abs(tx_center - frame_w / 2.0)
+                    dy = abs(ty_center - frame_h / 2.0)
+                    
+                    is_centered = (dx <= config.arrival_center_tolerance * frame_w) and (
+                        dy <= config.arrival_center_tolerance * frame_h
+                    )
+                    
+                    is_near = (
+                        not math.isnan(target_obj.kalman_distance_m)
+                        and target_obj.kalman_distance_m <= config.arrival_distance_m
+                    )
+                    
+                    result.target_is_arrived = is_centered and is_near
+                else:
+                    result.target_distance_m = float("nan")
+                    result.target_is_arrived = False
+
+                # Garbage collect stale ReID vectors of tracks no longer present
+                active_ids = {obj.track_id for obj in result.tracked_objects}
+                for stale_id in list(reid_vectors.keys()):
+                    if stale_id not in active_ids:
+                        del reid_vectors[stale_id]
+
+                # Calculate FPS
+                t_now = time.perf_counter()
+                fps = 0.9 * fps + 0.1 * (1.0 / max(t_now - t_prev, 1e-6))
+                t_prev = t_now
+
+                # 8. Draw side-by-side HUD display
+                hud_frame = draw_hud(
+                    result,
+                    cmap_name="Turbo",
+                    invert_depth=False,
+                    display_w=config.display_width,
+                    display_h=config.display_height,
+                )
+                
+                # Overlay current FPS on the HUD
+                cv2.putText(
+                    hud_frame,
+                    f"FPS: {fps:.1f}",
+                    (config.display_width - 110, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    1,
+                    lineType=cv2.LINE_AA,
+                )
+
+                cv2.imshow(window_name, hud_frame)
+
+                # 9. Key press actions
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    logger.info("User requested exit.")
+                    break
+                elif key == ord("t"):
+                    # Manual lock override on first target class detection
+                    lockable_objs = [
+                        obj for obj in result.tracked_objects
+                        if obj.class_name == config.target_class_name
+                    ]
+                    if lockable_objs:
+                        candidate = lockable_objs[0]
+                        candidate_id = candidate.track_id
+                        candidate_emb = reid_vectors.get(candidate_id)
+                        if candidate_emb is not None:
+                            target_lock.manual_lock(candidate_id, candidate_emb)
+                            logger.info("Manual override triggered lock on target ID %d", candidate_id)
+                        else:
+                            logger.warning("Manual override failed: ReID vector unavailable for ID %d", candidate_id)
+                    else:
+                        logger.warning("Manual override failed: no target class object in frame")
+
+        finally:
+            cam.stop()
+            cv2.destroyAllWindows()
+            logger.info("System clean exit.")
 
 
 if __name__ == "__main__":
