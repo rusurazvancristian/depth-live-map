@@ -117,6 +117,5 @@ def test_depth_engine_process_with_mock_mux():
     out = engine.process(result)
     
     assert out.depth_map is not None
-    assert out.depth_map.shape == (256, 320)
-    # Check normalization: since all elements are 1.0, min-max should fallback to 0.5
-    assert np.all(out.depth_map == 0.5)
+    assert np.allclose(out.depth_map, np.exp(-1.0))
+

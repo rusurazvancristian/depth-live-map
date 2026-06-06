@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mental Map SLAM</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:      #07071a;
+  --sidebar: #0c0c20;
+  --card:    #10102a;
+  --border:  #1c1c3c;
+  --accent:  #4d9dff;
+  --green:   #3dffa0;
+  --text:    #dde0f5;
+  --dim:     #505890;
+  --font:    'Segoe UI',system-ui,sans-serif;
+}
+html,body{height:100%;overflow:hidden;font-family:var(--font);
+  background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+.app{display:flex;height:100vh}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────── */
+.sidebar{
+  width:230px;flex-shrink:0;background:var(--sidebar);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+}
+.logo{padding:26px 22px 22px;border-bottom:1px solid var(--border)}
+.logo-mark{display:block;width:36px;height:36px;margin-bottom:14px}
+.logo-title{font-size:14px;font-weight:700;color:#8ac4ff;letter-spacing:.3px}
+.logo-sub{font-size:11px;color:var(--dim);margin-top:5px;line-height:1.6}
+.logo-badge{
+  display:inline-flex;align-items:center;gap:6px;margin-top:13px;
+  background:rgba(77,157,255,.1);color:var(--accent);
+  border:1px solid rgba(77,157,255,.25);
+  padding:3px 10px;border-radius:10px;font-size:10px;letter-spacing:.6px
+}
+.badge-dot{width:5px;height:5px;border-radius:50%;background:var(--green)}
+.nav{padding:14px 0;flex:1}
+.nav-item{
+  display:flex;align-items:center;gap:12px;padding:12px 22px;cursor:pointer;
+  font-size:13px;color:var(--dim);border-left:3px solid transparent;
+  transition:all .18s;user-select:none;
+}
+.nav-item:hover{background:rgba(77,157,255,.07);color:var(--text)}
+.nav-item.active{background:rgba(77,157,255,.12);color:#8ac4ff;font-weight:600;border-left-color:var(--accent)}
+.nav-icon{width:17px;height:17px;flex-shrink:0;opacity:.7}
+.nav-item.active .nav-icon,.nav-item:hover .nav-icon{opacity:1}
+.sidebar-footer{padding:16px 22px;border-top:1px solid var(--border);font-size:11px;color:var(--dim);line-height:2}
+
+/* ── Content ──────────────────────────────────────────────────────────── */
+.content{flex:1;overflow:hidden;position:relative}
+.page{position:absolute;inset:0;overflow-y:auto;display:none}
+.page.active{display:block}
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+.hero{
+  padding:48px 52px 36px;
+  background:linear-gradient(135deg,#090920 0%,#0e0e2c 55%,#091228 100%);
+  border-bottom:1px solid var(--border);position:relative;overflow:hidden;
+}
+.hero::before{
+  content:'';position:absolute;top:-80px;right:-80px;width:420px;height:420px;
+  background:radial-gradient(circle,rgba(77,157,255,.07) 0%,transparent 65%);pointer-events:none
+}
+.eyebrow{
+  font-size:10.5px;letter-spacing:2.5px;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px;display:flex;align-items:center;gap:10px
+}
+.eyebrow::before{content:'';display:block;width:28px;height:1px;background:var(--accent)}
+.hero-title{font-size:38px;font-weight:800;line-height:1.1;color:#fff;letter-spacing:-1px}
+.hero-title em{color:var(--accent);font-style:normal}
+.hero-sub{font-size:14px;color:var(--dim);margin-top:14px;max-width:600px;line-height:1.8}
+
+/* ── Process stepper ──────────────────────────────────────────────────── */
+.stepper{
+  display:flex;align-items:center;padding:28px 52px 0;
+}
+.step-node{display:flex;flex-direction:column;align-items:center;gap:7px;flex-shrink:0}
+.step-circle{
+  width:36px;height:36px;border-radius:50%;
+  background:rgba(77,157,255,.1);border:1.5px solid rgba(77,157,255,.3);
+  color:var(--dim);font-size:10px;font-weight:700;letter-spacing:.5px;
+  display:flex;align-items:center;justify-content:center;transition:all .2s;
+}
+.step-node.done .step-circle{background:rgba(77,157,255,.2);border-color:var(--accent);color:var(--accent)}
+.step-label{font-size:10px;color:var(--dim);letter-spacing:.5px;text-transform:uppercase;white-space:nowrap}
+.step-node.done .step-label{color:var(--accent)}
+.step-line{flex:1;height:1px;background:var(--border);margin:0 10px;margin-bottom:20px}
+
+/* ── Phase cards ──────────────────────────────────────────────────────── */
+.phases{padding:24px 52px 8px}
+.phase{
+  margin-bottom:20px;background:var(--card);
+  border:1px solid var(--border);border-radius:14px;overflow:hidden;
+}
+.phase-header{
+  display:flex;align-items:center;gap:14px;
+  padding:18px 26px;border-bottom:1px solid var(--border);
+  background:rgba(77,157,255,.03);
+}
+.phase-num{
+  width:32px;height:32px;border-radius:8px;flex-shrink:0;
+  background:rgba(77,157,255,.12);border:1px solid rgba(77,157,255,.28);
+  color:var(--accent);font-size:10px;font-weight:700;letter-spacing:.5px;
+  display:flex;align-items:center;justify-content:center;
+}
+.phase-titles{}
+.phase-title{font-size:15px;font-weight:700;color:var(--text)}
+.phase-sub{font-size:11.5px;color:var(--dim);margin-top:3px}
+.phase-body{padding:22px 26px}
+
+/* ── Brief data grid ──────────────────────────────────────────────────── */
+.brief-quote{
+  font-size:14px;color:var(--text);line-height:1.8;
+  padding:16px 20px;background:rgba(77,157,255,.05);
+  border-left:3px solid var(--accent);border-radius:0 8px 8px 0;
+  margin-bottom:20px;font-style:italic;
+}
+.brief-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.brief-item{
+  background:rgba(255,255,255,.03);border:1px solid var(--border);
+  border-radius:10px;padding:14px 16px;
+}
+.bi-label{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--dim)}
+.bi-val{font-size:18px;font-weight:700;color:var(--text);margin-top:5px}
+.bi-note{font-size:11px;color:var(--dim);margin-top:3px}
+
+/* ── Pipeline (compact) ───────────────────────────────────────────────── */
+.pipeline{
+  display:flex;align-items:stretch;
+  background:rgba(255,255,255,.02);border:1px solid var(--border);
+  border-radius:12px;overflow:hidden;
+}
+.pipe-step{
+  flex:1;padding:18px 10px 16px;text-align:center;
+  border-right:1px solid var(--border);
+  position:relative;transition:background .2s;
+}
+.pipe-step:last-child{border-right:none}
+.pipe-step:hover{background:rgba(77,157,255,.05)}
+.pipe-step::after{
+  content:'';position:absolute;right:-1px;top:50%;transform:translateY(-50%);
+  width:0;height:0;
+  border-top:5px solid transparent;border-bottom:5px solid transparent;
+  border-left:6px solid var(--border);z-index:1;
+}
+.pipe-step:last-child::after{display:none}
+.pipe-icon{
+  display:flex;align-items:center;justify-content:center;
+  width:32px;height:32px;border-radius:8px;
+  background:rgba(77,157,255,.1);border:1px solid rgba(77,157,255,.2);
+  margin:0 auto 10px;color:var(--accent);
+}
+.pipe-icon svg{width:15px;height:15px}
+.pipe-name{font-size:11px;font-weight:600;color:var(--text)}
+.pipe-tech{font-size:10px;color:var(--dim);margin-top:4px;line-height:1.5}
+
+/* ── Deliverables ─────────────────────────────────────────────────────── */
+.deliverables{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.deliv{
+  background:rgba(255,255,255,.02);border:1px solid var(--border);
+  border-radius:12px;padding:20px;
+}
+.deliv-icon{
+  width:38px;height:38px;border-radius:10px;
+  background:rgba(77,157,255,.1);border:1px solid rgba(77,157,255,.2);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--accent);margin-bottom:14px;
+}
+.deliv-icon svg{width:18px;height:18px}
+.deliv-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px}
+.deliv-desc{font-size:11.5px;color:var(--dim);line-height:1.7}
+.deliv-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.dtag{
+  font-size:10px;padding:2px 7px;border-radius:6px;
+  background:rgba(61,255,160,.08);color:var(--green);
+  border:1px solid rgba(61,255,160,.2)
+}
+.dtag.b{
+  background:rgba(77,157,255,.08);color:var(--accent);
+  border-color:rgba(77,157,255,.2)
+}
+
+/* ── Results stats ────────────────────────────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.stat{
+  background:rgba(255,255,255,.02);border:1px solid var(--border);
+  border-radius:12px;padding:20px;transition:border-color .2s,transform .2s;
+}
+.stat:hover{border-color:rgba(77,157,255,.4);transform:translateY(-2px)}
+.stat-val{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;
+  color:var(--accent);letter-spacing:-.5px}
+.stat-val.g{color:var(--green)}
+.stat-label{font-size:11.5px;color:var(--dim);margin-top:6px;line-height:1.5}
+
+/* ── Stack tags ───────────────────────────────────────────────────────── */
+.tags{display:flex;flex-wrap:wrap;gap:9px;padding:0 52px 48px}
+.tag{
+  padding:5px 13px;border-radius:20px;font-size:11px;
+  background:rgba(77,157,255,.07);border:1px solid rgba(77,157,255,.18);
+  color:var(--accent);transition:background .15s
+}
+.tag:hover{background:rgba(77,157,255,.15)}
+
+/* ── 3D Map ───────────────────────────────────────────────────────────── */
+.map-bar{
+  padding:0 28px;height:52px;flex-shrink:0;
+  background:var(--sidebar);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.map-title-txt{font-size:14px;font-weight:600;display:flex;align-items:center;gap:10px}
+.map-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px rgba(61,255,160,.6)}
+.map-hints{font-size:11.5px;color:var(--dim);display:flex;gap:18px}
+.map-hints b{color:var(--accent);font-weight:500}
+#map-wrap{height:calc(100vh - 52px);display:flex;flex-direction:column;position:relative}
+#map-frame{flex:1;border:none;display:block;width:100%}
+.map-loading{
+  position:absolute;inset:0;background:var(--bg);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:16px;font-size:13px;color:var(--dim);
+  transition:opacity .5s;pointer-events:none;
+}
+.spinner{
+  width:36px;height:36px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Videos ───────────────────────────────────────────────────────────── */
+.vids-hdr{padding:36px 44px 6px}
+.vids-title{font-size:22px;font-weight:700}
+.vids-sub{font-size:13px;color:var(--dim);margin-top:8px;line-height:1.6}
+.vids-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;padding:24px 44px 48px}
+.vid-card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:14px;overflow:hidden;cursor:pointer;
+  transition:border-color .2s,transform .25s,box-shadow .25s
+}
+.vid-card:hover{border-color:rgba(77,157,255,.45);transform:translateY(-4px);box-shadow:0 12px 40px rgba(77,157,255,.1)}
+.vid-thumb{
+  width:100%;aspect-ratio:16/9;
+  background:linear-gradient(135deg,#0c1030,#161b44);
+  position:relative;overflow:hidden
+}
+.vid-thumb-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:transform .35s;display:block}
+.vid-card:hover .vid-thumb-img{transform:scale(1.05)}
+.vid-thumb-fallback{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:10px;
+}
+.vid-thumb-fallback svg{width:30px;height:30px;opacity:.2;color:var(--accent)}
+.vid-thumb-fallback span{font-size:11px;color:var(--dim)}
+.play-btn{
+  position:absolute;width:50px;height:50px;border-radius:50%;
+  background:rgba(10,12,36,.85);border:1.5px solid rgba(77,157,255,.5);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 24px rgba(77,157,255,.2);
+  transition:all .2s;z-index:1;color:var(--accent);
+}
+.play-btn svg{width:18px;height:18px;margin-left:2px}
+.vid-card:hover .play-btn{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 32px rgba(77,157,255,.45);transform:scale(1.08)}
+.vid-info{padding:18px}
+.vid-name{font-size:13.5px;font-weight:600}
+.vid-meta{font-size:11px;color:var(--dim);margin-top:8px;display:flex;flex-wrap:wrap;gap:12px}
+.vid-meta span{display:flex;align-items:center;gap:5px}
+.vid-meta svg{width:12px;height:12px;opacity:.6}
+.vid-badges{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.vbadge{font-size:10px;padding:3px 8px;border-radius:7px;background:rgba(61,255,160,.08);color:var(--green);border:1px solid rgba(61,255,160,.22)}
+.vbadge.b{background:rgba(77,157,255,.08);color:var(--accent);border-color:rgba(77,157,255,.22)}
+
+/* ── Modal ────────────────────────────────────────────────────────────── */
+.modal{
+  position:fixed;inset:0;z-index:999;background:rgba(3,3,18,.96);
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+  animation:fadeIn .15s ease
+}
+.modal.open{display:flex}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal-close-btn{
+  position:absolute;top:18px;right:20px;width:36px;height:36px;border-radius:8px;
+  background:rgba(255,255,255,.05);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--dim);transition:all .15s
+}
+.modal-close-btn:hover{background:rgba(255,255,255,.1);color:var(--text)}
+.modal-close-btn svg{width:16px;height:16px}
+.modal-lbl{font-size:12px;color:var(--dim);margin-bottom:14px;letter-spacing:.3px}
+#modal-video{max-width:calc(100vw - 80px);max-height:calc(100vh - 110px);border-radius:10px;outline:none;box-shadow:0 0 80px rgba(0,0,0,.8)}
+
+/* Live and Calibration Specific Layouts */
+.feed-toggle-btn.active {
+  background: rgba(77, 157, 255, 0.18) !important;
+  color: #8ac4ff !important;
+  border: 1px solid rgba(77, 157, 255, 0.3) !important;
+}
+.btn:hover {
+  filter: brightness(1.2);
+}
+.btn:active {
+  transform: scale(0.97);
+}
+.btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed !important;
+}
+.calib-step-card {
+  transition: all 0.25s ease;
+}
+@keyframes pulse {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ── Sidebar ─────────────────────────────────────────────────────────── -->
+<div class="sidebar">
+  <div class="logo">
+    <svg class="logo-mark" viewBox="0 0 36 36" fill="none">
+      <rect x="2"  y="2"  width="14" height="14" rx="3" fill="#4d9dff" opacity=".9"/>
+      <rect x="20" y="2"  width="14" height="14" rx="3" fill="#4d9dff" opacity=".45"/>
+      <rect x="2"  y="20" width="14" height="14" rx="3" fill="#4d9dff" opacity=".45"/>
+      <rect x="20" y="20" width="14" height="14" rx="3" fill="#3dffa0" opacity=".7"/>
+    </svg>
+    <div class="logo-title">Mental Map SLAM</div>
+    <div class="logo-sub">Unitree Go2 · DepthAnything V2<br>Visual Odometry · Semantic Map</div>
+    <div class="logo-badge"><span class="badge-dot"></span>PITCH DEMO v1.0</div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item active" id="nav-overview" onclick="show('overview')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/>
+        <rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>
+      </svg>
+      Process &amp; Results
+    </div>
+    <div class="nav-item" id="nav-live" onclick="show('live')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2"/>
+        <rect x="9" y="9" width="6" height="6"/>
+        <line x1="9" y1="1" x2="9" y2="4"/>
+        <line x1="15" y1="1" x2="15" y2="4"/>
+        <line x1="9" y1="20" x2="9" y2="23"/>
+        <line x1="15" y1="20" x2="15" y2="23"/>
+        <line x1="20" y1="9" x2="23" y2="9"/>
+        <line x1="20" y1="15" x2="23" y2="15"/>
+        <line x1="1" y1="9" x2="4" y2="9"/>
+        <line x1="1" y1="15" x2="4" y2="15"/>
+      </svg>
+      Live NPU Tracker
+    </div>
+    <div class="nav-item" id="nav-calibrate" onclick="show('calibrate')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <path d="M9 3v18"/>
+        <path d="M15 3v18"/>
+        <path d="M3 9h18"/>
+        <path d="M3 15h18"/>
+      </svg>
+      Camera Calibration
+    </div>
+    <div class="nav-item" id="nav-map" onclick="show('map')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>
+      </svg>
+      3D Map Explorer
+    </div>
+    <div class="nav-item" id="nav-videos" onclick="show('videos')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="20" height="20" rx="2.5"/>
+        <path d="M10 8l6 4-6 4V8z"/>
+      </svg>
+      Demo Videos
+    </div>
+    <div class="nav-item" id="nav-photo" onclick="show('photo')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <circle cx="5"  cy="5"  r="1.5"/><circle cx="12" cy="3"  r="1.5"/><circle cx="19" cy="6"  r="1.5"/>
+        <circle cx="3"  cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="21" cy="12" r="1.5"/>
+        <circle cx="5"  cy="19" r="1.5"/><circle cx="13" cy="21" r="1.5"/><circle cx="19" cy="18" r="1.5"/>
+      </svg>
+      Space Explorer
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    PyTorch 2.5 · CUDA 12.1<br>
+    OpenCV 4.12 · Three.js<br>
+    YOLOv8n · 80 COCO classes
+  </div>
+</div>
+
+<!-- ── Content ─────────────────────────────────────────────────────────── -->
+<div class="content">
+
+  <!-- ═══════════════════ OVERVIEW ═══════════════════ -->
+  <div class="page active" id="page-overview">
+
+    <!-- Hero -->
+    <div class="hero">
+      <div class="eyebrow">Jury Challenge — Full-Stack Response</div>
+      <div class="hero-title">From Raw Data to<br><em>3D Intelligence</em></div>
+      <div class="hero-sub">
+        The jury provided raw video footage from a mobile robot and asked us to
+        build a perception model over the data and present results.
+        What follows is how we approached it — from brief to working demo.
+      </div>
+    </div>
+
+    <!-- Process stepper -->
+    <div class="stepper">
+      <div class="step-node done">
+        <div class="step-circle">01</div>
+        <div class="step-label">The Brief</div>
+      </div>
+      <div class="step-line"></div>
+      <div class="step-node done">
+        <div class="step-circle">02</div>
+        <div class="step-label">The Engine</div>
+      </div>
+      <div class="step-line"></div>
+      <div class="step-node done">
+        <div class="step-circle">03</div>
+        <div class="step-label">The UI</div>
+      </div>
+      <div class="step-line"></div>
+      <div class="step-node done">
+        <div class="step-circle">04</div>
+        <div class="step-label">Results</div>
+      </div>
+    </div>
+
+    <!-- ── Phase 01: The Brief ── -->
+    <div class="phases">
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-num">01</div>
+          <div class="phase-titles">
+            <div class="phase-title">The Brief</div>
+            <div class="phase-sub">What the jury gave us — the iteration material</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <div class="brief-quote">
+            "Given the iteration material, train and synthesise a model over the data, and present results."
+          </div>
+          <div class="brief-grid">
+            <div class="brief-item">
+              <div class="bi-label">Input</div>
+              <div class="bi-val">5 videos</div>
+              <div class="bi-note">Raw MP4 — Unitree Go2</div>
+            </div>
+            <div class="brief-item">
+              <div class="bi-label">Resolution</div>
+              <div class="bi-val">1920×1080</div>
+              <div class="bi-note">15 FPS · 120° FOV</div>
+            </div>
+            <div class="brief-item">
+              <div class="bi-label">Intrinsics</div>
+              <div class="bi-val">fx = fy = 554</div>
+              <div class="bi-note">cx 960 · cy 540</div>
+            </div>
+            <div class="brief-item">
+              <div class="bi-label">Constraints</div>
+              <div class="bi-val">Camera only</div>
+              <div class="bi-note">No IMU · no ground truth · no depth sensor</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Phase 02: Building the Engine ── -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-num">02</div>
+          <div class="phase-titles">
+            <div class="phase-title">Building the Engine</div>
+            <div class="phase-sub">A 6-stage on-device perception pipeline — no cloud, no additional sensors</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <div class="pipeline">
+
+            <div class="pipe-step">
+              <div class="pipe-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+                  <circle cx="12" cy="13" r="4"/>
+                </svg>
+              </div>
+              <div class="pipe-name">Camera Input</div>
+              <div class="pipe-tech">1920×1080<br>15 FPS · 120° FOV</div>
+            </div>
+
+            <div class="pipe-step">
+              <div class="pipe-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              </div>
+              <div class="pipe-name">Depth Estimation</div>
+              <div class="pipe-tech">DepthAnything V2<br>Metric Outdoor</div>
+            </div>
+
+            <div class="pipe-step">
+              <div class="pipe-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+                </svg>
+              </div>
+              <div class="pipe-name">Visual Odometry</div>
+              <div class="pipe-tech">ORB features<br>PnP-RANSAC</div>
+            </div>
+
+            <div class="pipe-step">
+              <div class="pipe-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/>
+                  <line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/>
+                </svg>
+              </div>
+              <div class="pipe-name">BEV Map</div>
+              <div class="pipe-tech">2000×2000 grid<br>5 cm / pixel</div>
+            </div>
+
+            <div class="pipe-step">
+              <div class="pipe-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/>
+                  <line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/>
+                </svg>
+              </div>
+              <div class="pipe-name">Object Detection</div>
+              <div class="pipe-tech">YOLOv8n · GPU<br>15th-pct depth</div>
+            </div>
+
+            <div class="pipe-step">
+              <div class="pipe-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/>
+                  <line x1="7" y1="7" x2="7.01" y2="7"/>
+                </svg>
+              </div>
+              <div class="pipe-name">Semantic Labels</div>
+              <div class="pipe-tech">3D world position<br>persistent memory</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Phase 03: Building the UI ── -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-num">03</div>
+          <div class="phase-titles">
+            <div class="phase-title">Building the UI</div>
+            <div class="phase-sub">Three deliverables built to present the results end-to-end</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <div class="deliverables">
+
+            <div class="deliv">
+              <div class="deliv-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                </svg>
+              </div>
+              <div class="deliv-title">SLAM Engine</div>
+              <div class="deliv-desc">
+                Modular Python pipeline — depth inference, feature tracking,
+                pose estimation, BEV mapping, and YOLO distance measurement
+                all running on GPU in real time.
+              </div>
+              <div class="deliv-tags">
+                <span class="dtag b">Python 3.12</span>
+                <span class="dtag b">PyTorch + CUDA</span>
+                <span class="dtag b">OpenCV</span>
+              </div>
+            </div>
+
+            <div class="deliv">
+              <div class="deliv-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="2" width="20" height="20" rx="2.5"/>
+                  <line x1="8" y1="2" x2="8" y2="22"/><line x1="16" y1="2" x2="16" y2="22"/>
+                  <line x1="2" y1="12" x2="22" y2="12"/>
+                </svg>
+              </div>
+              <div class="deliv-title">Side-by-side Demo Videos</div>
+              <div class="deliv-desc">
+                One MP4 per video — three synchronised panels showing the
+                live RGB feed with ORB features, the depth map, and the
+                SLAM BEV with YOLO distance labels accumulating in real time.
+              </div>
+              <div class="deliv-tags">
+                <span class="dtag">RGB + ORB</span>
+                <span class="dtag">Depth map</span>
+                <span class="dtag">Live BEV</span>
+                <span class="dtag">YOLO dist.</span>
+              </div>
+            </div>
+
+            <div class="deliv">
+              <div class="deliv-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+              </div>
+              <div class="deliv-title">This Pitch Application</div>
+              <div class="deliv-desc">
+                Native Windows app built with pywebview and Three.js —
+                interactive 3D point cloud explorer (250 K points, WebGL),
+                video gallery, and this process overview.
+              </div>
+              <div class="deliv-tags">
+                <span class="dtag b">pywebview</span>
+                <span class="dtag b">Three.js</span>
+                <span class="dtag b">.exe</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Phase 04: Results ── -->
+      <div class="phase">
+        <div class="phase-header">
+          <div class="phase-num">04</div>
+          <div class="phase-titles">
+            <div class="phase-title">The Results</div>
+            <div class="phase-sub">Measurable outputs produced from the 5 provided video clips</div>
+          </div>
+        </div>
+        <div class="phase-body">
+          <div class="stats-grid">
+            <div class="stat">
+              <div class="stat-val" data-t="2914221">0</div>
+              <div class="stat-label">3D point cloud points<br>from 5 videos merged</div>
+            </div>
+            <div class="stat">
+              <div class="stat-val" data-t="522">0</div>
+              <div class="stat-label">Keyframes processed<br>across all footage</div>
+            </div>
+            <div class="stat">
+              <div class="stat-val g">4.5</div>
+              <div class="stat-label">Keyframes / second<br>on RTX 3060 GPU</div>
+            </div>
+            <div class="stat">
+              <div class="stat-val g">100 m²</div>
+              <div class="stat-label">BEV map coverage<br>at 5 cm / pixel</div>
+            </div>
+            <div class="stat">
+              <div class="stat-val">80</div>
+              <div class="stat-label">COCO object classes<br>with metric distance</div>
+            </div>
+            <div class="stat">
+              <div class="stat-val g">250 K</div>
+              <div class="stat-label">Voxel-downsampled points<br>in interactive 3D viewer</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /.phases -->
+
+    <!-- Tech stack -->
+    <div style="padding:8px 52px 12px;font-size:10.5px;letter-spacing:2px;text-transform:uppercase;color:var(--dim)">
+      Technology Stack
+    </div>
+    <div class="tags">
+      <span class="tag">Python 3.12</span>
+      <span class="tag">PyTorch 2.5 + CUDA 12.1</span>
+      <span class="tag">DepthAnything V2 Metric</span>
+      <span class="tag">YOLOv8n — Ultralytics</span>
+      <span class="tag">OpenCV 4.12</span>
+      <span class="tag">ORB Feature Tracking</span>
+      <span class="tag">PnP-RANSAC SLAM</span>
+      <span class="tag">Three.js WebGL</span>
+      <span class="tag">Unitree Go2</span>
+      <span class="tag">Hailo-8 NPU — 26 TOPS</span>
+      <span class="tag">NVIDIA RTX 3060</span>
+      <span class="tag">HuggingFace Transformers</span>
+    </div>
+
+  </div><!-- /page-overview -->
+
+  <!-- ═══════════════════ LIVE NPU TRACKER ═══════════════════ -->
+  <div class="page" id="page-live">
+    <div class="hero" style="padding:32px 52px 24px">
+      <div class="eyebrow">Real-time Inference &amp; Target Lock</div>
+      <div class="hero-title">Live <em>NPU Tracker</em></div>
+      <div class="hero-sub">
+        View the live camera stream and depth map outputs computed on the Hailo-8 NPU. Adjust tracking metrics, lock onto moving objects, and monitor target arrival bounds.
+      </div>
+    </div>
+    
+    <div class="live-layout" style="display:flex; gap:24px; padding:24px 52px; align-items:start">
+      <!-- Column 1: Viewport -->
+      <div class="live-viewport-card" style="flex:1.6; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:18px; position:relative; overflow:hidden; min-width:0">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+          <div style="font-size:14px; font-weight:700; color:#fff; display:flex; align-items:center; gap:8px">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,0.2)" id="live-stream-status-dot"></span>
+            Video Stream Feed
+          </div>
+          <div style="display:flex; background:rgba(255,255,255,0.04); border:1px solid var(--border); border-radius:20px; padding:2px">
+            <button id="btn-feed-hud" class="feed-toggle-btn active" onclick="setFeedType('hud')" style="border:none; background:transparent; padding:6px 14px; border-radius:18px; font-size:11px; font-weight:600; color:var(--accent); cursor:pointer; transition:all 0.2s">
+              HUD Feed
+            </button>
+            <button id="btn-feed-depth" class="feed-toggle-btn" onclick="setFeedType('depth')" style="border:none; background:transparent; padding:6px 14px; border-radius:18px; font-size:11px; font-weight:600; color:var(--dim); cursor:pointer; transition:all 0.2s">
+              Depth Feed
+            </button>
+          </div>
+        </div>
+
+        <div class="stream-container" style="position:relative; width:100%; aspect-ratio:4/3; background:#040410; border-radius:8px; overflow:hidden; border:1px solid var(--border)">
+          <img id="live-stream-img" src="" style="width:100%; height:100%; object-fit:contain; display:block" alt="Live stream" />
+          
+          <div id="live-stopped-overlay" style="position:absolute; inset:0; background:rgba(7, 7, 26, 0.92); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; border-radius:8px; z-index:10; opacity:1; transition:opacity 0.3s; backdrop-filter:blur(4px)">
+            <svg style="width:40px; height:40px; color:var(--dim)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span style="font-size:14px; font-weight:600; color:var(--text)">Pipeline Stopped</span>
+            <span style="font-size:11.5px; color:var(--dim); margin-top:-8px; text-align:center; max-width:280px; line-height:1.5">Start the background tracking pipeline to active camera and NPU stream.</span>
+            <button class="btn" onclick="startPipeline()" style="margin-top:8px; background:var(--accent); color:#07071a; border:none; padding:10px 20px; border-radius:6px; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:8px; font-size:11px">
+              <svg style="width:12px; height:12px; fill:currentColor" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Start Pipeline
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 2: Controls -->
+      <div class="live-controls-card" style="flex:1; min-width:320px; display:flex; flex-direction:column; gap:20px">
+        <!-- Control Actions -->
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px">
+          <div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim); margin-bottom:14px">
+            Pipeline Control
+          </div>
+          <div style="display:flex; gap:12px; margin-bottom:16px">
+            <button id="btn-pipeline-start" class="btn" onclick="startPipeline()" style="flex:1; padding:11px; border-radius:8px; background:rgba(61, 255, 160, 0.08); border:1px solid rgba(61, 255, 160, 0.25); color:var(--green); font-weight:700; font-size:11px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; transition:all 0.2s">
+              <svg style="width:11px; height:11px; fill:currentColor" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Start
+            </button>
+            <button id="btn-pipeline-stop" class="btn" onclick="stopPipeline()" style="flex:1; padding:11px; border-radius:8px; background:rgba(255, 77, 77, 0.08); border:1px solid rgba(255, 77, 77, 0.25); color:#ff4d4d; font-weight:700; font-size:11px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; transition:all 0.2s">
+              <svg style="width:11px; height:11px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+              Stop
+            </button>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:12px; background:rgba(255,255,255,0.015); border:1px solid var(--border); border-radius:8px">
+            <div style="font-size:11px; color:var(--dim)">NPU Inference Frame Rate</div>
+            <div style="font-size:18px; font-weight:700; color:var(--green); font-variant-numeric:tabular-nums" id="live-fps-val">0.0</div>
+          </div>
+        </div>
+
+        <!-- Target Monitor -->
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px">
+            <div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim)">
+              Target Lock Monitor
+            </div>
+            <span id="target-status-badge" style="font-size:8.5px; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; padding:3px 8px; border-radius:10px; background:rgba(255,255,255,0.04); color:var(--dim); border:1px solid var(--border)">
+              IDLE
+            </span>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px">
+            <div style="background:rgba(255,255,255,0.015); border:1px solid var(--border); border-radius:8px; padding:10px">
+              <div style="font-size:8.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--dim)">Target ID</div>
+              <div style="font-size:15px; font-weight:700; color:#fff; margin-top:4px" id="val-target-id">-</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.015); border:1px solid var(--border); border-radius:8px; padding:10px">
+              <div style="font-size:8.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--dim)">Est. Distance</div>
+              <div style="font-size:15px; font-weight:700; color:var(--accent); margin-top:4px" id="val-target-dist">-</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.015); border:1px solid var(--border); border-radius:8px; padding:10px">
+              <div style="font-size:8.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--dim)">Center Offset</div>
+              <div style="font-size:12px; font-weight:700; color:#fff; margin-top:6px; white-space:nowrap" id="val-target-offset">-</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.015); border:1px solid var(--border); border-radius:8px; padding:10px; display:flex; flex-direction:column; justify-content:center">
+              <div style="font-size:8.5px; text-transform:uppercase; letter-spacing:0.5px; color:var(--dim); margin-bottom:4px">Arrival Flag</div>
+              <span id="val-target-arrived" style="font-size:9.5px; font-weight:700; letter-spacing:0.5px; text-align:center; text-transform:uppercase; padding:2px 6px; border-radius:4px; background:rgba(255,255,255,0.04); color:var(--dim); border:1px solid var(--border)">
+                NOT ARRIVED
+              </span>
+            </div>
+          </div>
+
+          <div style="display:flex; gap:10px">
+            <button id="btn-target-lock" class="btn" onclick="lockTarget()" style="flex:1.2; padding:9px; border-radius:6px; background:rgba(77, 157, 255, 0.08); border:1px solid rgba(77, 157, 255, 0.25); color:var(--accent); font-weight:600; font-size:11px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; transition:all 0.2s">
+              <svg style="width:11px; height:11px; fill:none; stroke:currentColor; stroke-width:2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+              Lock Target
+            </button>
+            <button id="btn-target-unlock" class="btn" onclick="unlockTarget()" style="flex:1; padding:9px; border-radius:6px; background:rgba(255,255,255,0.02); border:1px solid var(--border); color:var(--dim); font-weight:600; font-size:11px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; transition:all 0.2s">
+              Unlock
+            </button>
+          </div>
+        </div>
+
+        <!-- Configurations -->
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px">
+          <div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim); margin-bottom:14px">
+            Configuration Tuner
+          </div>
+          
+          <div style="margin-bottom:12px">
+            <div style="display:flex; justify-content:space-between; font-size:10.5px; margin-bottom:4px">
+              <span style="color:var(--text)">YOLO Conf Threshold</span>
+              <span style="color:var(--accent); font-weight:700" id="lbl-det-conf">0.50</span>
+            </div>
+            <input type="range" id="slide-det-conf" min="0.10" max="0.90" step="0.05" value="0.50" oninput="updateTunerLabels()" style="width:100%; accent-color:var(--accent)" />
+          </div>
+
+          <div style="margin-bottom:12px">
+            <div style="display:flex; justify-content:space-between; font-size:10.5px; margin-bottom:4px">
+              <span style="color:var(--text)">ReID Match Threshold</span>
+              <span style="color:var(--accent); font-weight:700" id="lbl-reid-thresh">0.30</span>
+            </div>
+            <input type="range" id="slide-reid-thresh" min="0.05" max="0.80" step="0.05" value="0.30" oninput="updateTunerLabels()" style="width:100%; accent-color:var(--accent)" />
+          </div>
+
+          <div style="margin-bottom:12px">
+            <div style="display:flex; justify-content:space-between; font-size:10.5px; margin-bottom:4px">
+              <span style="color:var(--text)">Kalman Process Noise (Q)</span>
+              <span style="color:var(--accent); font-weight:700" id="lbl-kalman-noise">0.05</span>
+            </div>
+            <input type="range" id="slide-kalman-noise" min="0.001" max="0.30" step="0.005" value="0.05" oninput="updateTunerLabels()" style="width:100%; accent-color:var(--accent)" />
+          </div>
+
+          <div style="margin-bottom:16px">
+            <div style="display:flex; justify-content:space-between; font-size:10.5px; margin-bottom:4px">
+              <span style="color:var(--text)">Arrival Target Distance</span>
+              <span style="color:var(--accent); font-weight:700" id="lbl-arrival-dist">1.0 m</span>
+            </div>
+            <input type="range" id="slide-arrival-dist" min="0.3" max="3.0" step="0.1" value="1.0" oninput="updateTunerLabels()" style="width:100%; accent-color:var(--accent)" />
+          </div>
+
+          <button class="btn" onclick="applyConfiguration()" style="width:100%; padding:10px; border-radius:6px; background:rgba(77,157,255,0.1); border:1px solid var(--accent); color:#fff; font-weight:700; font-size:11px; cursor:pointer; transition:all 0.2s">
+            Apply Configuration
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ CAMERA CALIBRATION ═══════════════════ -->
+  <div class="page" id="page-calibrate">
+    <div class="hero" style="padding:32px 52px 24px">
+      <div class="eyebrow">Pinhole Baseline Focal Length calibration</div>
+      <div class="hero-title">Camera <em>Calibration</em></div>
+      <div class="hero-sub">
+        Calibrate the camera intrinsics using an A5 sheet of paper (150mm × 205mm) positioned at exactly 1.0 meter. A calibrated focal length reduces distance estimation error.
+      </div>
+    </div>
+
+    <div class="calib-layout" style="display:flex; gap:24px; padding:24px 52px; align-items:start">
+      <!-- Column 1: Viewport -->
+      <div class="calib-viewport-card" style="flex:1.6; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:18px; position:relative; overflow:hidden; min-width:0">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px">
+          <div style="font-size:14px; font-weight:700; color:#fff; display:flex; align-items:center; gap:8px">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,0.2)" id="calib-status-dot"></span>
+            Calibration Viewport
+          </div>
+          <span id="calib-state-badge" style="font-size:8.5px; font-weight:700; letter-spacing:0.8px; text-transform:uppercase; padding:3px 8px; border-radius:10px; background:rgba(255,255,255,0.04); color:var(--dim); border:1px solid var(--border)">
+            IDLE
+          </span>
+        </div>
+
+        <div class="calib-stream-container" style="position:relative; width:100%; aspect-ratio:4/3; background:#040410; border-radius:8px; overflow:hidden; border:1px solid var(--border); cursor:crosshair">
+          <img id="calib-stream-img" src="" style="width:100%; height:100%; object-fit:contain; display:block; user-select:none" alt="Calibration stream" onclick="handleCalibClick(event)" />
+          
+          <div id="calib-frozen-overlay" style="position:absolute; inset:0; background:rgba(7, 7, 26, 0.4); border-radius:8px; pointer-events:none; opacity:0; display:flex; flex-direction:column; align-items:center; justify-content:center; transition:opacity 0.25s; z-index:5">
+            <div style="background:rgba(12, 12, 32, 0.95); border:1px solid var(--border); padding:10px 20px; border-radius:8px; display:flex; align-items:center; gap:10px; box-shadow:0 8px 32px rgba(0,0,0,0.6)">
+              <span style="display:inline-block; width:6px; height:6px; border-radius:50%; background:#ff4d4d; animation:pulse 0.8s infinite alternate"></span>
+              <span style="font-size:10.5px; font-weight:600; color:#fff; letter-spacing:0.3px">Freeze Frame Active: Click top-left, then bottom-right of A5 paper</span>
+            </div>
+          </div>
+
+          <div id="calib-roi-box" style="position:absolute; border:2px dashed var(--green); background:rgba(61, 255, 160, 0.08); pointer-events:none; display:none; z-index:6"></div>
+          <div id="calib-click-pt1" style="position:absolute; width:8px; height:8px; border-radius:50%; background:#ff4d4d; border:1.5px solid #fff; transform:translate(-50%, -50%); display:none; z-index:7"></div>
+          <div id="calib-click-pt2" style="position:absolute; width:8px; height:8px; border-radius:50%; background:#ff4d4d; border:1.5px solid #fff; transform:translate(-50%, -50%); display:none; z-index:7"></div>
+        </div>
+      </div>
+
+      <!-- Column 2: Controls -->
+      <div class="calib-controls-card" style="flex:1; min-width:320px; display:flex; flex-direction:column; gap:20px">
+        <!-- Steps Wizard -->
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px">
+          <div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim); margin-bottom:14px">
+            Calibration Wizard
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:16px">
+            <div id="step-1" class="calib-step-card active" style="padding:10px; border-radius:8px; background:rgba(77, 157, 255, 0.05); border:1px solid var(--accent); display:flex; gap:10px">
+              <div class="step-num" style="width:20px; height:20px; border-radius:50%; background:rgba(77,157,255,0.2); border:1px solid var(--accent); color:var(--accent); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; flex-shrink:0">1</div>
+              <div>
+                <div style="font-size:11px; font-weight:700; color:#fff">Setup Reference Target</div>
+                <div style="font-size:10px; color:var(--dim); margin-top:2px; line-height:1.4">Position an A5 paper sheet (150mm x 205mm) exactly 1.0m from lens, centered and facing straight.</div>
+              </div>
+            </div>
+
+            <div id="step-2" class="calib-step-card" style="padding:10px; border-radius:8px; background:rgba(255,255,255,0.015); border:1px solid var(--border); display:flex; gap:10px">
+              <div class="step-num" style="width:20px; height:20px; border-radius:50%; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:var(--dim); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; flex-shrink:0">2</div>
+              <div>
+                <div style="font-size:11px; font-weight:700; color:#fff">Freeze Frame &amp; Select ROI</div>
+                <div style="font-size:10px; color:var(--dim); margin-top:2px; line-height:1.4">Click "Start Calibration" to freeze, then click the top-left and bottom-right edges of the paper sheet.</div>
+              </div>
+            </div>
+
+            <div id="step-3" class="calib-step-card" style="padding:10px; border-radius:8px; background:rgba(255,255,255,0.015); border:1px solid var(--border); display:flex; gap:10px">
+              <div class="step-num" style="width:20px; height:20px; border-radius:50%; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:var(--dim); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; flex-shrink:0">3</div>
+              <div>
+                <div style="font-size:11px; font-weight:700; color:#fff">Compute &amp; Save Intrinsics</div>
+                <div style="font-size:10px; color:var(--dim); margin-top:2px; line-height:1.4">Click "Compute &amp; Save" to calculate focal length and save configurations to the on-device DB.</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:10px">
+            <button id="btn-calib-start" class="btn" onclick="startCalibration()" style="width:100%; padding:11px; border-radius:6px; background:var(--accent); color:#07071a; font-weight:700; font-size:11.5px; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; transition:all 0.2s">
+              <svg style="width:12px; height:12px; fill:none; stroke:currentColor; stroke-width:2.5" viewBox="0 0 24 24"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+              Start Calibration
+            </button>
+            <button id="btn-calib-save" class="btn" onclick="saveCalibration()" disabled style="width:100%; padding:11px; border-radius:6px; background:rgba(61,255,160,0.08); border:1px solid rgba(61,255,160,0.25); color:var(--green); font-weight:700; font-size:11.5px; cursor:not-allowed; opacity:0.5; display:flex; align-items:center; justify-content:center; gap:8px; transition:all 0.2s">
+              <svg style="width:12px; height:12px; fill:none; stroke:currentColor; stroke-width:2" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              Compute &amp; Save
+            </button>
+          </div>
+        </div>
+
+        <!-- Focal Length Output -->
+        <div style="background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px">
+          <div style="font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:var(--dim); margin-bottom:14px">
+            Intrinsics Output
+          </div>
+
+          <div style="background:rgba(255,255,255,0.015); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center">
+            <div>
+              <div style="font-size:9.5px; color:var(--dim); text-transform:uppercase; letter-spacing:0.5px">Calibrated Focal Length (f_y)</div>
+              <div style="font-size:20px; font-weight:800; color:#fff; margin-top:4px" id="lbl-focal-val">- <span style="font-size:11px; font-weight:400; color:var(--dim)">px</span></div>
+            </div>
+            <svg style="width:24px; height:24px; color:var(--accent); opacity:0.8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><line x1="3.27" y1="6.96" x2="12" y2="12.01"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          </div>
+
+          <!-- Verify Toggle -->
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:10px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px">
+            <div>
+              <div style="font-size:10.5px; font-weight:700; color:#fff">Verify Mode</div>
+              <div style="font-size:8.5px; color:var(--dim); margin-top:2px">Real-time distance estimation overlay</div>
+            </div>
+            <button id="btn-calib-verify" class="btn" onclick="toggleVerifyMode()" style="padding:6px 12px; border-radius:6px; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:var(--dim); font-size:10px; font-weight:700; cursor:pointer; transition:all 0.2s">
+              Enable Verify
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ SPACE EXPLORER ═══════════════════ -->
+  <div class="page" id="page-photo">
+    <iframe id="photo-frame" src="" style="width:100%;height:100%;border:none;display:block" title="Space Explorer"></iframe>
+  </div>
+
+  <!-- ═══════════════════ 3D MAP ═══════════════════ -->
+  <div class="page" id="page-map">
+    <div id="map-wrap">
+      <div class="map-bar">
+        <div class="map-title-txt">
+          <span class="map-dot"></span>
+          3D Point Cloud Explorer &nbsp;·&nbsp; 250 K points &nbsp;·&nbsp; 5 videos merged
+        </div>
+        <div class="map-hints">
+          <span><b>Left drag</b> rotate</span>
+          <span><b>Right drag</b> pan</span>
+          <span><b>Scroll</b> zoom</span>
+          <span><b>RGB / Height</b> colour toggle in viewer</span>
+        </div>
+      </div>
+      <div style="position:relative;flex:1;display:flex">
+        <div class="map-loading" id="map-loading">
+          <div class="spinner"></div>
+          <span>Loading 3D map…</span>
+        </div>
+        <iframe id="map-frame" src="" title="3D Map"
+          onload="document.getElementById('map-loading').style.opacity='0'"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ VIDEOS ═══════════════════ -->
+  <div class="page" id="page-videos">
+    <div class="vids-hdr">
+      <div class="vids-title">Demo Videos</div>
+      <div class="vids-sub">
+        Three-panel side-by-side &nbsp;—&nbsp;
+        <b>RGB + ORB features</b> &nbsp;|&nbsp;
+        <b>DepthAnything V2 depth map</b> &nbsp;|&nbsp;
+        <b>Live SLAM BEV with YOLO distance labels</b>
+      </div>
+    </div>
+    <div class="vids-grid" id="vids-grid"></div>
+  </div>
+
+</div><!-- /.content -->
+</div><!-- /.app -->
+
+<!-- Modal -->
+<div class="modal" id="vid-modal">
+  <div class="modal-close-btn" onclick="closeVid()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  </div>
+  <div class="modal-lbl" id="modal-lbl"></div>
+  <video id="modal-video" controls></video>
+</div>
+
+<script>
+// ── Navigation ─────────────────────────────────────────────────────────────
+let statusPollInterval = null;
+let currentFeedType = 'hud'; // 'hud' or 'depth'
+let calibState = 'idle'; // local state: "idle" | "frozen" | "verifying"
+let calibPt1 = null;
+let calibPt2 = null;
+
+function show(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.getElementById('nav-'  + name).classList.add('active');
+  
+  // Manage background status polling
+  if (name === 'live' || name === 'calibrate') {
+    startStatusPolling();
+  } else {
+    stopStatusPolling();
+  }
+
+  // Manage feed streams
+  updateStreamSources(name);
+
+  if (name === 'map') {
+    const f = document.getElementById('map-frame');
+    if (!f.src || !f.src.includes('demo_3d')) {
+      document.getElementById('map-loading').style.opacity = '1';
+      f.src = '/output/demo_3d.html';
+    }
+  }
+  if (name === 'photo') {
+    const f = document.getElementById('photo-frame');
+    if (!f.src || !f.src.includes('photogrammetry')) {
+      f.src = '/pitch_demo/photogrammetry.html';
+    }
+  }
+  if (name === 'overview') runCounters();
+}
+
+function updateStreamSources(activePage) {
+  const liveImg = document.getElementById('live-stream-img');
+  const calibImg = document.getElementById('calib-stream-img');
+  
+  if (activePage === 'live') {
+    liveImg.src = currentFeedType === 'hud' ? '/live_feed' : '/depth_feed';
+    calibImg.src = '';
+  } else if (activePage === 'calibrate') {
+    calibImg.src = '/live_feed';
+    liveImg.src = '';
+  } else {
+    liveImg.src = '';
+    calibImg.src = '';
+  }
+}
+
+function setFeedType(type) {
+  currentFeedType = type;
+  document.querySelectorAll('.feed-toggle-btn').forEach(btn => {
+    btn.classList.remove('active');
+    btn.style.color = 'var(--dim)';
+  });
+  
+  if (type === 'hud') {
+    document.getElementById('btn-feed-hud').classList.add('active');
+    document.getElementById('btn-feed-hud').style.color = '#fff';
+  } else {
+    document.getElementById('btn-feed-depth').classList.add('active');
+    document.getElementById('btn-feed-depth').style.color = '#fff';
+  }
+  
+  const liveImg = document.getElementById('live-stream-img');
+  if (document.getElementById('page-live').classList.contains('active')) {
+    liveImg.src = type === 'hud' ? '/live_feed' : '/depth_feed';
+  }
+}
+
+// ── Pipeline Status & Polling ────────────────────────────────────────────────
+function startStatusPolling() {
+  if (statusPollInterval) clearInterval(statusPollInterval);
+  pollStatus(); // immediate first run
+  statusPollInterval = setInterval(pollStatus, 500);
+}
+
+function stopStatusPolling() {
+  if (statusPollInterval) {
+    clearInterval(statusPollInterval);
+    statusPollInterval = null;
+  }
+}
+
+let slidersFocused = false;
+
+function pollStatus() {
+  fetch('/api/pipeline/status')
+    .then(res => res.json())
+    .then(status => {
+      const running = status.running;
+      
+      // Update FPS value
+      document.getElementById('live-fps-val').textContent = running ? status.fps.toFixed(1) : '0.0';
+      
+      // Update Stream status dot & overlay
+      const statusDot = document.getElementById('live-stream-status-dot');
+      const stoppedOverlay = document.getElementById('live-stopped-overlay');
+      
+      if (running) {
+        statusDot.style.background = 'var(--green)';
+        statusDot.style.boxShadow = '0 0 8px var(--green)';
+        stoppedOverlay.style.opacity = '0';
+        stoppedOverlay.style.pointerEvents = 'none';
+      } else {
+        statusDot.style.background = '#ff4d4d';
+        statusDot.style.boxShadow = '0 0 8px #ff4d4d';
+        stoppedOverlay.style.opacity = '1';
+        stoppedOverlay.style.pointerEvents = 'all';
+      }
+
+      // Update configuration sliders if they haven't been adjusted manually
+      if (!slidersFocused) {
+        document.getElementById('slide-det-conf').value = status.config.det_conf;
+        document.getElementById('slide-reid-thresh').value = status.config.reid_cosine_threshold;
+        document.getElementById('slide-kalman-noise').value = status.config.kalman_process_noise;
+        document.getElementById('slide-arrival-dist').value = status.config.arrival_distance_m;
+        updateTunerLabels();
+      }
+
+      // Update Target Lock Monitor details
+      const targetId = status.target_id;
+      const targetStatus = status.target_status;
+      const targetDistance = status.target_distance_m;
+      const targetOffset = status.target_center_offset;
+      const targetArrived = status.target_is_arrived;
+
+      // Target status badge
+      const badge = document.getElementById('target-status-badge');
+      badge.textContent = targetStatus;
+      if (targetStatus === 'LOCKED') {
+        badge.style.background = 'rgba(61, 255, 160, 0.15)';
+        badge.style.color = 'var(--green)';
+        badge.style.borderColor = 'rgba(61, 255, 160, 0.3)';
+      } else if (targetStatus === 'SEARCHING') {
+        badge.style.background = 'rgba(77, 157, 255, 0.15)';
+        badge.style.color = 'var(--accent)';
+        badge.style.borderColor = 'rgba(77, 157, 255, 0.3)';
+      } else if (targetStatus === 'LOST') {
+        badge.style.background = 'rgba(255, 77, 77, 0.15)';
+        badge.style.color = '#ff4d4d';
+        badge.style.borderColor = 'rgba(255, 77, 77, 0.3)';
+      } else {
+        badge.style.background = 'rgba(255,255,255,0.04)';
+        badge.style.color = 'var(--dim)';
+        badge.style.borderColor = 'var(--border)';
+      }
+
+      // Values
+      document.getElementById('val-target-id').textContent = (targetId !== -1) ? targetId : '-';
+      document.getElementById('val-target-dist').textContent = (targetDistance !== null && targetDistance !== undefined) ? targetDistance.toFixed(3) + ' m' : '-';
+      document.getElementById('val-target-offset').textContent = (targetId !== -1 && targetOffset) ? `dx:${targetOffset[0]}, dy:${targetOffset[1]}` : '-';
+
+      // Arrived flag
+      const arrivedBadge = document.getElementById('val-target-arrived');
+      if (targetArrived) {
+        arrivedBadge.textContent = 'ARRIVED';
+        arrivedBadge.style.background = 'rgba(61, 255, 160, 0.2)';
+        arrivedBadge.style.color = 'var(--green)';
+        arrivedBadge.style.borderColor = 'var(--green)';
+      } else {
+        arrivedBadge.textContent = 'NOT ARRIVED';
+        arrivedBadge.style.background = 'rgba(255,255,255,0.04)';
+        arrivedBadge.style.color = 'var(--dim)';
+        arrivedBadge.style.borderColor = 'var(--border)';
+      }
+
+      // Update calibration details
+      updateCalibrationUI(status);
+    })
+    .catch(err => console.error("Error polling pipeline status:", err));
+}
+
+// ── Pipeline Actions ─────────────────────────────────────────────────────────
+function startPipeline() {
+  fetch('/api/pipeline/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      pollStatus();
+    } else {
+      alert("Failed to start pipeline: " + data.error);
+    }
+  })
+  .catch(err => console.error(err));
+}
+
+function stopPipeline() {
+  fetch('/api/pipeline/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      pollStatus();
+    } else {
+      alert("Failed to stop pipeline: " + data.error);
+    }
+  })
+  .catch(err => console.error(err));
+}
+
+function lockTarget() {
+  const tidStr = prompt("Enter Track ID to lock (leave blank to auto-lock first visible candidate):");
+  const body = {};
+  if (tidStr !== null && tidStr.trim() !== "") {
+    const tid = parseInt(tidStr);
+    if (!isNaN(tid)) {
+      body.track_id = tid;
+    }
+  }
+  fetch('/api/pipeline/lock', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (!data.success) alert("Failed to lock target: " + data.error);
+  })
+  .catch(err => console.error(err));
+}
+
+function unlockTarget() {
+  fetch('/api/pipeline/unlock', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (!data.success) alert("Failed to unlock target: " + data.error);
+  })
+  .catch(err => console.error(err));
+}
+
+// ── Configuration Tuner ──────────────────────────────────────────────────────
+function applyConfiguration() {
+  const det_conf = parseFloat(document.getElementById('slide-det-conf').value);
+  const reid_cosine_threshold = parseFloat(document.getElementById('slide-reid-thresh').value);
+  const kalman_process_noise = parseFloat(document.getElementById('slide-kalman-noise').value);
+  const arrival_distance_m = parseFloat(document.getElementById('slide-arrival-dist').value);
+
+  const configData = {
+    det_conf: det_conf,
+    reid_cosine_threshold: reid_cosine_threshold,
+    kalman_process_noise: kalman_process_noise,
+    arrival_distance_m: arrival_distance_m
+  };
+
+  fetch('/api/pipeline/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(configData)
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (!data.success) {
+      alert("Failed to apply configuration: " + data.error);
+    }
+  })
+  .catch(err => console.error(err));
+}
+
+function updateTunerLabels() {
+  const det = parseFloat(document.getElementById('slide-det-conf').value);
+  const reid = parseFloat(document.getElementById('slide-reid-thresh').value);
+  const kalman = parseFloat(document.getElementById('slide-kalman-noise').value);
+  const arrival = parseFloat(document.getElementById('slide-arrival-dist').value);
+  
+  document.getElementById('lbl-det-conf').textContent = det.toFixed(2);
+  document.getElementById('lbl-reid-thresh').textContent = reid.toFixed(2);
+  document.getElementById('lbl-kalman-noise').textContent = kalman.toFixed(3);
+  document.getElementById('lbl-arrival-dist').textContent = arrival.toFixed(1) + ' m';
+}
+
+// ── Calibration Logic ────────────────────────────────────────────────────────
+function startCalibration() {
+  fetch('/api/calibrate/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      clearCalibrationClicks();
+      setCalibrationWizardStep(2);
+      pollStatus();
+    } else {
+      alert("Failed to start calibration: " + data.error);
+    }
+  })
+  .catch(err => console.error(err));
+}
+
+function handleCalibClick(event) {
+  if (calibState !== "frozen") return;
+
+  const img = event.target;
+  const rect = img.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+
+  if (!calibPt1) {
+    calibPt1 = { x, y };
+    const pt1El = document.getElementById('calib-click-pt1');
+    pt1El.style.left = x + 'px';
+    pt1El.style.top = y + 'px';
+    pt1El.style.display = 'block';
+    
+    document.getElementById('calib-click-pt2').style.display = 'none';
+    document.getElementById('calib-roi-box').style.display = 'none';
+    calibPt2 = null;
+    
+    setCalibrationWizardStep(2);
+  } else if (!calibPt2) {
+    calibPt2 = { x, y };
+    const pt2El = document.getElementById('calib-click-pt2');
+    pt2El.style.left = x + 'px';
+    pt2El.style.top = y + 'px';
+    pt2El.style.display = 'block';
+
+    const x1_display = Math.min(calibPt1.x, calibPt2.x);
+    const y1_display = Math.min(calibPt1.y, calibPt2.y);
+    const x2_display = Math.max(calibPt1.x, calibPt2.x);
+    const y2_display = Math.max(calibPt1.y, calibPt2.y);
+
+    const roiBox = document.getElementById('calib-roi-box');
+    roiBox.style.left = x1_display + 'px';
+    roiBox.style.top = y1_display + 'px';
+    roiBox.style.width = (x2_display - x1_display) + 'px';
+    roiBox.style.height = (y2_display - y1_display) + 'px';
+    roiBox.style.display = 'block';
+
+    const displayed_width = rect.width;
+    const displayed_height = rect.height;
+    
+    const x1_cam = Math.round(x1_display * (640 / displayed_width));
+    const y1_cam = Math.round(y1_display * (480 / displayed_height));
+    const x2_cam = Math.round(x2_display * (640 / displayed_width));
+    const y2_cam = Math.round(y2_display * (480 / displayed_height));
+
+    fetch('/api/calibrate/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x1: x1_cam, y1: y1_cam, x2: x2_cam, y2: y2_cam })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('btn-calib-save').disabled = false;
+        document.getElementById('btn-calib-save').style.cursor = 'pointer';
+        document.getElementById('btn-calib-save').style.opacity = '1';
+        setCalibrationWizardStep(3);
+      } else {
+        alert("Error sending coordinates: " + data.error);
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Failed to submit calibration region.");
+    });
+  } else {
+    calibPt1 = { x, y };
+    const pt1El = document.getElementById('calib-click-pt1');
+    pt1El.style.left = x + 'px';
+    pt1El.style.top = y + 'px';
+    pt1El.style.display = 'block';
+    
+    document.getElementById('calib-click-pt2').style.display = 'none';
+    document.getElementById('calib-roi-box').style.display = 'none';
+    document.getElementById('btn-calib-save').disabled = true;
+    document.getElementById('btn-calib-save').style.cursor = 'not-allowed';
+    document.getElementById('btn-calib-save').style.opacity = '0.5';
+    calibPt2 = null;
+    
+    setCalibrationWizardStep(2);
+  }
+}
+
+function saveCalibration() {
+  fetch('/api/calibrate/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      alert(`Calibration complete! Saved f_y = ${data.focal_length_px.toFixed(1)} px`);
+      clearCalibrationClicks();
+      setCalibrationWizardStep(1);
+      pollStatus();
+    } else {
+      alert("Failed to save calibration: " + data.error);
+    }
+  })
+  .catch(err => console.error(err));
+}
+
+function toggleVerifyMode() {
+  const verifyActive = calibState === 'verifying';
+  fetch('/api/calibrate/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enable: !verifyActive })
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.success) {
+      pollStatus();
+    } else {
+      alert("Failed to toggle verify mode: " + data.error);
+    }
+  })
+  .catch(err => console.error(err));
+}
+
+function setCalibrationWizardStep(step) {
+  document.querySelectorAll('.calib-step-card').forEach((card, idx) => {
+    const sNum = card.querySelector('.step-num');
+    if (idx + 1 === step) {
+      card.style.background = 'rgba(77, 157, 255, 0.05)';
+      card.style.borderColor = 'var(--accent)';
+      if (sNum) {
+        sNum.style.background = 'rgba(77,157,255,0.2)';
+        sNum.style.borderColor = 'var(--accent)';
+        sNum.style.color = 'var(--accent)';
+      }
+    } else {
+      card.style.background = 'rgba(255,255,255,0.015)';
+      card.style.borderColor = 'var(--border)';
+      if (sNum) {
+        sNum.style.background = 'rgba(255,255,255,0.04)';
+        sNum.style.borderColor = 'var(--border)';
+        sNum.style.color = 'var(--dim)';
+      }
+    }
+  });
+}
+
+function updateCalibrationUI(status) {
+  const prevCalibState = calibState;
+  calibState = status.calibration_state;
+  
+  const statusDot = document.getElementById('calib-status-dot');
+  const stateBadge = document.getElementById('calib-state-badge');
+  stateBadge.textContent = calibState.toUpperCase();
+  
+  const verifyBtns = document.querySelectorAll('#btn-calib-verify');
+
+  if (calibState === 'frozen') {
+    statusDot.style.background = '#ffaa4d';
+    document.getElementById('calib-frozen-overlay').style.opacity = '1';
+    document.getElementById('btn-calib-start').textContent = 'Restart Selection';
+    
+    if (prevCalibState !== 'frozen') {
+      setCalibrationWizardStep(2);
+      clearCalibrationClicks();
+    }
+  } else if (calibState === 'verifying') {
+    statusDot.style.background = 'var(--green)';
+    document.getElementById('calib-frozen-overlay').style.opacity = '0';
+    document.getElementById('btn-calib-start').textContent = 'Start Calibration';
+    
+    verifyBtns.forEach(btn => {
+      btn.textContent = 'Disable Verify';
+      btn.classList.add('active');
+      btn.style.color = '#fff';
+      btn.style.borderColor = 'var(--green)';
+      btn.style.background = 'rgba(61, 255, 160, 0.1)';
+    });
+    
+    if (prevCalibState !== 'verifying') {
+      setCalibrationWizardStep(1);
+    }
+  } else {
+    statusDot.style.background = 'var(--dim)';
+    document.getElementById('calib-frozen-overlay').style.opacity = '0';
+    document.getElementById('btn-calib-start').textContent = 'Start Calibration';
+    
+    verifyBtns.forEach(btn => {
+      btn.textContent = 'Enable Verify';
+      btn.classList.remove('active');
+      btn.style.color = 'var(--dim)';
+      btn.style.borderColor = 'var(--border)';
+      btn.style.background = 'rgba(255,255,255,0.04)';
+    });
+    
+    if (prevCalibState !== 'idle') {
+      setCalibrationWizardStep(1);
+      clearCalibrationClicks();
+    }
+  }
+  
+  const focalVal = status.focal_length_px;
+  document.getElementById('lbl-focal-val').innerHTML = (focalVal > 0) ? `${focalVal.toFixed(1)} <span style="font-size:11px; font-weight:400; color:var(--dim)">px</span>` : `- <span style="font-size:11px; font-weight:400; color:var(--dim)">px</span>`;
+}
+
+function clearCalibrationClicks() {
+  calibPt1 = null;
+  calibPt2 = null;
+  document.getElementById('calib-click-pt1').style.display = 'none';
+  document.getElementById('calib-click-pt2').style.display = 'none';
+  document.getElementById('calib-roi-box').style.display = 'none';
+  document.getElementById('btn-calib-save').disabled = true;
+  document.getElementById('btn-calib-save').style.cursor = 'not-allowed';
+  document.getElementById('btn-calib-save').style.opacity = '0.5';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const slides = ['slide-det-conf', 'slide-reid-thresh', 'slide-kalman-noise', 'slide-arrival-dist'];
+  slides.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', applyConfiguration);
+    }
+  });
+
+  const inputs = document.querySelectorAll('input[type="range"]');
+  inputs.forEach(input => {
+    input.addEventListener('focus', () => { slidersFocused = true; });
+    input.addEventListener('blur', () => { slidersFocused = false; });
+  });
+});
+
+// ── Animated counters ──────────────────────────────────────────────────────
+let countered = false;
+function runCounters() {
+  if (countered) return; countered = true;
+  document.querySelectorAll('[data-t]').forEach(el => {
+    const target = parseInt(el.dataset.t), dur = 1800, t0 = performance.now();
+    const fmt = n => n >= 1000 ? n.toLocaleString() : String(n);
+    const step = t => {
+      const p = Math.min((t - t0) / dur, 1), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = fmt(Math.round(e * target));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+runCounters();
+
+// ── Video grid ─────────────────────────────────────────────────────────────
+const VIDS = [
+  { n:1, title:'Exploration — Area A',   kf:102, x:9.0,  z:4.8  },
+  { n:2, title:'Long Traverse — Area B', kf:180, x:20.0, z:10.3 },
+  { n:3, title:'Corridor Mapping',       kf:98,  x:6.1,  z:13.8 },
+  { n:4, title:'Close-range Scan',       kf:53,  x:3.8,  z:4.8  },
+  { n:5, title:'Detail Pass',            kf:89,  x:2.6,  z:2.1  },
+];
+const icoKf   = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+const icoX    = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
+const icoZ    = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>`;
+const icoPlay = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+const icoFilm = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="2.5"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>`;
+
+const grid = document.getElementById('vids-grid');
+VIDS.forEach(({n, title, kf, x, z}) => {
+  const c = document.createElement('div');
+  c.className = 'vid-card';
+  c.onclick = () => playVid(n, title);
+  c.innerHTML = `
+    <div class="vid-thumb">
+      <div class="vid-thumb-fallback">${icoFilm}<span>Video ${n}</span></div>
+      <img class="vid-thumb-img"
+           src="/pitch_demo/thumbs/video_${n}_thumb.jpg"
+           onload="this.previousElementSibling.style.display='none'" alt="">
+      <div class="play-btn">${icoPlay}</div>
+    </div>
+    <div class="vid-info">
+      <div class="vid-name">Video ${n} — ${title}</div>
+      <div class="vid-meta">
+        <span>${icoKf} ${kf} keyframes</span>
+        <span>${icoX} X ${x} m</span>
+        <span>${icoZ} Z ${z} m</span>
+      </div>
+      <div class="vid-badges">
+        <span class="vbadge b">RGB</span>
+        <span class="vbadge b">Depth</span>
+        <span class="vbadge">SLAM BEV</span>
+        <span class="vbadge">YOLO Distance</span>
+      </div>
+    </div>`;
+  grid.appendChild(c);
+});
+
+function playVid(n, title) {
+  document.getElementById('modal-lbl').textContent =
+    `Video ${n} — ${title}  ·  SLAM side-by-side demo`;
+  const v = document.getElementById('modal-video');
+  v.src = `/output/video_${n}_demo.mp4`;
+  document.getElementById('vid-modal').classList.add('open');
+  v.play();
+}
+function closeVid() {
+  document.getElementById('vid-modal').classList.remove('open');
+  const v = document.getElementById('modal-video');
+  v.pause(); v.src = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeVid(); });
+</script>
+</body>
+</html>

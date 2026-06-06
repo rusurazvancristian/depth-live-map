@@ -16,7 +16,54 @@ Q       quit
 import json, os, time
 import cv2
 import numpy as np
-from picamera2 import Picamera2
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
+    logger = logging.getLogger(__name__)
+    logger.warning("picamera2 not found. Initialising mock Picamera2 using system webcam / synthetic generator.")
+
+    class Picamera2:
+        """Mock Picamera2 implementation using OpenCV webcam or synthetic paper generator."""
+        def __init__(self) -> None:
+            self.cap = cv2.VideoCapture(0)
+            self.dummy_frame = None
+
+        def create_preview_configuration(self, **kwargs):
+            return None
+
+        def configure(self, cam_config) -> None:
+            pass
+
+        def start(self) -> None:
+            if not self.cap.isOpened():
+                logger.warning("Could not open system webcam. Generating synthetic test frames.")
+                self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def capture_array(self) -> np.ndarray:
+            if self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret:
+                    # OpenCV reads BGR, which matches BGR888 requested format
+                    return frame
+            # Generate a dummy frame with a simulated A5 sheet of paper at 1.0m
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            # Center of frame is (320, 240)
+            # Paper height = 205mm, width = 150mm. f_y = 408px.
+            # rh = (0.205 * 408) / 1.0 = 84 px
+            # rw = (0.150 * 408) / 1.0 = 61 px
+            x1, y1 = 320 - 30, 240 - 42
+            x2, y2 = 320 + 30, 240 + 42
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (240, 240, 240), -1)
+            cv2.putText(frame, "MOCK A5 PAPER", (x1 + 5, y1 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (10, 10, 10), 1)
+            return frame
+
+        def stop(self) -> None:
+            if self.cap.isOpened():
+                self.cap.release()
 
 # ── Known target ──────────────────────────────────────────────────────────────
 PAPER_W_M    = 0.150
@@ -29,10 +76,11 @@ WIN          = "Calibrate"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def open_cam():
     cam = Picamera2()
-    cam.configure(cam.create_preview_configuration(
-        main={"size": (CAM_W, CAM_H), "format": "BGR888"},
-        controls={"FrameRate": 30, "AfMode": 0, "LensPosition": 0.0},
-    ))
+    if PICAMERA2_AVAILABLE:
+        cam.configure(cam.create_preview_configuration(
+            main={"size": (CAM_W, CAM_H), "format": "BGR888"},
+            controls={"FrameRate": 30, "AfMode": 0, "LensPosition": 0.0},
+        ))
     cam.start(); time.sleep(1.0)
     return cam
 
@@ -92,14 +140,14 @@ def main():
         if state == "LIVE":
             frame = cam.capture_array()
             vis = frame.copy()
-            put(vis, ["Hold A5 paper at 1.0 m", "SPACE=freeze  V=verify  Q=quit"])
+            put(vis, ["Hold A5 paper at 1.0 m", "SPACE / F = freeze  V = verify  Q = quit"])
             cx,cy = CAM_W//2, CAM_H//2
             cv2.line(vis,(cx-20,cy),(cx+20,cy),(0,255,0),1)
             cv2.line(vis,(cx,cy-20),(cx,cy+20),(0,255,0),1)
 
         elif state == "FROZEN":
             vis = frozen.copy()
-            put(vis, ["Draw rect around paper", "ENTER=accept  ESC=retry  Q=quit"])
+            put(vis, ["Draw rect around paper", "ENTER / A = accept  ESC / R = retry  Q = quit"])
             roi = get_roi()
             if roi:
                 cv2.rectangle(vis, roi[:2], roi[2:], (0,255,0), 2)
@@ -118,7 +166,7 @@ def main():
                 f"f_x = {fx_:.1f} px",
                 f"f_y = {fy_:.1f} px",
                 f"Verify: {ver:.3f} m  (err {err:.1f}%)",
-                "ENTER=save  ESC=retry  Q=quit",
+                "ENTER / S = save  ESC / R = retry  Q = quit",
             ], col=(80,255,80))
 
         elif state == "VERIFY":
@@ -138,35 +186,40 @@ def main():
                         put(vis,[f"d = {d:.3f} m  (f_y={fy:.0f})"],
                             y0=CAM_H-36, col=(80,255,80))
                 put(vis,["VERIFY: draw rect on paper -> see distance",
-                         "SPACE=recalibrate  Q=quit"], col=(0,200,255))
+                         "SPACE / F = recalibrate  Q = quit"], col=(0,200,255))
             else:
-                put(vis,["No f_y saved yet — press ESC to calibrate first"])
+                put(vis,["No f_y saved yet — press ESC / R to calibrate first"])
 
         # ── Show + key ───────────────────────────────────────────────────
         show(vis)
         key = cv2.waitKey(30) & 0xFF
 
-        if key == ord("q"):
+        if key != 255:
+            # Safe character representation printing
+            print(f"Key pressed: {key} ('{chr(key) if 32 <= key < 127 else 'special'}')")
+
+        if key in (ord("q"), ord("Q")):
             break
 
         # ── Transitions ──────────────────────────────────────────────────
         if state == "LIVE":
-            if key == ord(" "):
+            if key in (ord(" "), ord("f"), ord("F")):
                 frozen = frame.copy(); reset_roi(); state = "FROZEN"
-            elif key == ord("v") and fy:
+                print("Frozen. Draw rectangle around the paper.")
+            elif key in (ord("v"), ord("V")) and fy:
                 reset_roi(); state = "VERIFY"
 
         elif state == "FROZEN":
-            if key == 13 and done:          # ENTER
+            if key in (13, 10, ord("a"), ord("A")) and done:          # ENTER or 'a'
                 roi = get_roi()
                 if roi:
                     rw = roi[2]-roi[0]; rh = roi[3]-roi[1]
                     state = "RESULT"
-            elif key == 27:                 # ESC
+            elif key in (27, ord("r"), ord("R")):                 # ESC or 'r'
                 reset_roi(); state = "LIVE"
 
         elif state == "RESULT":
-            if key == 13:                   # ENTER — save
+            if key in (13, 10, ord("s"), ord("S")):                   # ENTER or 's'
                 roi = get_roi()
                 rw = roi[2]-roi[0]; rh = roi[3]-roi[1]
                 fy_ = round(rh*PAPER_H_M/DIST_M, 1)
@@ -179,11 +232,11 @@ def main():
                 fy = fy_
                 print(f"Saved  f_y={fy_}  f_x={fx_}  →  {OUT}")
                 reset_roi(); state = "VERIFY"
-            elif key == 27:                 # ESC
+            elif key in (27, ord("r"), ord("R")):                 # ESC or 'r'
                 reset_roi(); state = "LIVE"
 
         elif state == "VERIFY":
-            if key == ord(" "):
+            if key in (ord(" "), ord("f"), ord("F")):
                 reset_roi(); state = "LIVE"
 
     cam.stop()

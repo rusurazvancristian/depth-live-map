@@ -18,3 +18,9 @@ models/*_norm.json
 venv/
 env/
 hailort.log
+
+# Build & Dist directories
+build/
+dist/
+*.spec
+

@@ -57,8 +57,12 @@ except ImportError:
                 if ret:
                     # Picamera2 outputs RGB, OpenCV reads BGR
                     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                else:
+                    logger.warning("Webcam opened but failed to read frames. Releasing webcam and falling back to synthetic generator.")
+                    self.cap.release()
 
-            # Generate synthetic target frame (simulated human walking)
+            if self.dummy_frame is None:
+                self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
             frame = self.dummy_frame.copy()
             t = time.time()
             # Walk left/right
@@ -230,11 +234,18 @@ def main() -> None:
             focal_length_px=focal_length_px,
             heights_path=config.heights_json,
         )
+        # Retrieve shapes from multiplexer to avoid config discrepancies and prevent crashes (e.g. in mock mode)
+        depth_shape = multiplexer.get_input_shape("depth")
+        depth_h, depth_w = (depth_shape[1], depth_shape[2]) if len(depth_shape) == 4 else (depth_shape[0], depth_shape[1])
+        
+        reid_shape = multiplexer.get_input_shape("reid")
+        reid_h, reid_w = (reid_shape[1], reid_shape[2]) if len(reid_shape) == 4 else (reid_shape[0], reid_shape[1])
+
         depth_engine = DepthEngine(
             multiplexer,
             model_name="depth",
-            input_h=config.depth_input_height,
-            input_w=config.depth_input_width,
+            input_h=depth_h,
+            input_w=depth_w,
         )
         kalman_depth_engine = KalmanDepthEngine(
             q_scale=config.kalman_process_noise,
@@ -246,8 +257,8 @@ def main() -> None:
         reid_engine = ReIDEngine(
             multiplexer,
             model_name="reid",
-            input_h=config.reid_input_height,
-            input_w=config.reid_input_width,
+            input_h=reid_h,
+            input_w=reid_w,
             embedding_dim=config.reid_embedding_dim,
         )
 
