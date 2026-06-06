@@ -56,30 +56,27 @@ def draw_hud(
         lineType=cv2.LINE_AA,
     )
 
-    # 3. Draw tracked objects
-    for obj in result.tracked_objects:
+    # 3. Draw ONLY the locked target bbox (one box on screen)
+    target_obj_list = [
+        obj for obj in result.tracked_objects
+        if result.target_id != -1 and obj.track_id == result.target_id
+    ]
+    for obj in target_obj_list:
         x1_orig, y1_orig, x2_orig, y2_orig = obj.bbox
         x1 = int(round(x1_orig * scale_x))
         y1 = int(round(y1_orig * scale_y))
         x2 = int(round(x2_orig * scale_x))
         y2 = int(round(y2_orig * scale_y))
 
-        # Check if this object is the locked target
-        is_target = (result.target_id != -1) and (obj.track_id == result.target_id)
+        is_target = True
 
-        # Style configuration
-        if is_target:
-            if result.target_is_arrived:
-                color = (0, 0, 255)  # Red for arrival
-                thickness = 3
-            else:
-                color = (255, 0, 255)  # Purple for target lock
-                thickness = 2
+        if result.target_is_arrived:
+            color = (0, 0, 255)
+            thickness = 3
         else:
-            color = (0, 255, 0)  # Green for general tracks
-            thickness = 1
+            color = (255, 0, 255)
+            thickness = 2
 
-        # Draw bbox
         cv2.rectangle(cam_vis, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
         
         # If target, draw corner brackets for premium look
@@ -238,14 +235,13 @@ def draw_hud(
 
     # 6. Right side: Colormapped depth map representation
     if result.depth_map is not None:
-        # depth_map values are exp(-log_disparity), proportional to metric depth
-        # Use percentile normalization to handle outliers
+        # depth_map = disparity (higher = closer); invert for display (far = bright)
         p2  = np.percentile(result.depth_map, 2)
         p98 = np.percentile(result.depth_map, 98)
         depth_clipped = np.clip(result.depth_map, p2, max(p98, p2 + 1e-6))
         depth_norm = ((depth_clipped - p2) / (p98 - p2) * 255).astype(np.uint8)
-        if invert_depth:
-            depth_norm = 255 - depth_norm
+        # Invert: disparity high=close → we want close=dark, far=bright for intuitive display
+        depth_norm = 255 - depth_norm if not invert_depth else depth_norm
 
         cmap_id = COLORMAPS.get(cmap_name, cv2.COLORMAP_TURBO)
         depth_color = cv2.applyColorMap(depth_norm, cmap_id)
@@ -253,10 +249,9 @@ def draw_hud(
         # Resize to HUD half-width
         depth_vis = cv2.resize(depth_color, (half_w, display_h), interpolation=cv2.INTER_LINEAR)
 
-        # Draw target bbox projection on the depth map
+        # Draw locked target bbox projection on the depth map
         for obj in result.tracked_objects:
-            is_target = (result.target_id != -1) and (obj.track_id == result.target_id)
-            if is_target:
+            if result.target_id != -1 and obj.track_id == result.target_id:
                 x1_orig, y1_orig, x2_orig, y2_orig = obj.bbox
                 x1 = int(round(x1_orig * scale_x))
                 y1 = int(round(y1_orig * scale_y))

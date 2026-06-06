@@ -46,18 +46,17 @@ class DepthEngine(BaseEngine):
         )
 
     def process_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        """Process a raw BGR frame and return a metric-proportional depth map.
+        """Process a raw BGR frame and return a disparity map.
 
-        SCDepthV3 outputs log-disparity (higher = closer). We convert to
-        exp(-raw) which gives values proportional to metric distance
-        (higher = farther), suitable for scale calibration via KalmanDepthEngine.
+        Depth Anything V2 outputs disparity (higher = closer, range ~0.2-4.4).
+        Metric conversion: d_metric = scale / disparity, where
+        scale is calibrated per-track by KalmanDepthEngine using geometry.
 
         Args:
             frame: Raw BGR frame.
 
         Returns:
-            Depth map (256, 320) with values proportional to distance (exp-space),
-            or None on error.
+            Disparity map (H, W) float32, higher = closer, or None on error.
         """
         try:
             resized = cv2.resize(frame, (self._input_w, self._input_h))
@@ -66,16 +65,11 @@ class DepthEngine(BaseEngine):
 
             raw_output = self._mux.infer(self._model_name, self._batch_buffer)
 
-            # raw: log-disparity, shape (256, 320), higher = closer
-            raw = raw_output.reshape((self._input_h, self._input_w))
-
-            # exp(-raw): proportional to metric depth, higher = farther
-            depth_metric_prop = np.exp(-raw).astype(np.float32)
-
-            return depth_metric_prop
+            # Disparity map: shape (H, W), float32, higher = closer
+            return raw_output.reshape((self._input_h, self._input_w)).astype(np.float32)
 
         except Exception as exc:
-            logger.error("DepthEngine failed to process frame: %s", exc, exc_info=True)
+            logger.error("DepthEngine failed: %s", exc, exc_info=True)
             return None
 
     def process(self, result: FrameResult) -> FrameResult:

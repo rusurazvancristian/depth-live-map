@@ -31,8 +31,9 @@ class _DepthTracker:
         # Covariance matrix P
         self.P = np.eye(2, dtype=np.float32) * 10.0
         
-        # Scale factor for relative depth -> metric depth alignment
-        self.scale_factor: float = 3.0
+        # Scale factor for Depth Anything V2: d = scale / disparity
+        # At ~1m, disparity ≈ 2.0 → scale ≈ 2.0 (auto-calibrated from geometry)
+        self.scale_factor: float = 2.0
         
         self.initialized = False
         self.absence_counter = 0
@@ -68,9 +69,10 @@ class _DepthTracker:
         if np.isnan(z) or z <= 0.1:
             return False
 
-        # If rel_depth is valid, update scale factor
+        # Update scale: disparity model → d = scale / disparity
+        # so scale = d_geo * disparity_at_bbox
         if rel_depth is not None and not np.isnan(rel_depth) and rel_depth > 1e-4:
-            s_inst = z / rel_depth
+            s_inst = z * rel_depth
             if not self.initialized:
                 self.scale_factor = s_inst
             else:
@@ -114,12 +116,15 @@ class _DepthTracker:
         return True
 
     def update_depth(self, rel_depth: float) -> bool:
-        """Update state using relative depth measurement (scaled to metric)."""
+        """Update state using disparity measurement (scaled to metric).
+
+        Depth Anything V2: disparity model, d = scale / disparity.
+        """
         if np.isnan(rel_depth) or rel_depth <= 0.0:
             return False
 
-        # Scale relative depth to metric space
-        z = rel_depth * self.scale_factor
+        # Convert disparity to metric distance: d = scale / disparity
+        z = self.scale_factor / rel_depth
 
         if not self.initialized:
             self.x[0, 0] = z

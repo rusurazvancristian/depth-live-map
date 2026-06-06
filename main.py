@@ -93,6 +93,59 @@ except ImportError:
                 self.cap.release()
 
 
+_BBOX_ALPHA    = 0.35   # EMA smoothing — lower = smoother, higher = more responsive
+_COAST_FRAMES  = 20    # frames to keep last bbox when target temporarily disappears
+
+
+class _BBoxSmoother:
+    """EMA bbox smoother with coasting for the locked target."""
+
+    def __init__(self):
+        self._bbox_f = None          # float [x1,y1,x2,y2]
+        self._coast  = 0             # frames since last live detection
+        self._last_dist  = float("nan")
+        self._last_class = ""
+
+    def update(self, obj):
+        """Feed a live TrackedObject; returns smoothed (x1,y1,x2,y2) int tuple."""
+        new = np.array(obj.bbox, dtype=float)
+        if self._bbox_f is None:
+            self._bbox_f = new
+        else:
+            self._bbox_f = _BBOX_ALPHA * new + (1 - _BBOX_ALPHA) * self._bbox_f
+        self._coast      = 0
+        self._last_dist  = obj.kalman_distance_m
+        self._last_class = obj.class_name
+        return self._smoothed()
+
+    def coast(self):
+        """Called when target_obj is None; returns coasted bbox or None if expired."""
+        if self._bbox_f is None:
+            return None
+        self._coast += 1
+        if self._coast > _COAST_FRAMES:
+            return None
+        return self._smoothed()
+
+    def reset(self):
+        self._bbox_f = None
+        self._coast  = 0
+        self._last_dist  = float("nan")
+        self._last_class = ""
+
+    def _smoothed(self):
+        x1, y1, x2, y2 = self._bbox_f
+        return int(x1), int(y1), int(x2), int(y2)
+
+    @property
+    def is_coasting(self):
+        return self._coast > 0
+
+    @property
+    def coasting_frames(self):
+        return self._coast
+
+
 def load_focal_length(config: Config) -> float:
     """Load f_y from intrinsics.json if calibrated, otherwise scale or fallback to config default."""
     try:
@@ -228,6 +281,7 @@ def main() -> None:
         logger.info("HUD Pipeline running. Press [T] to manually lock on target, [Q] to quit.")
 
         reid_vectors: Dict[int, np.ndarray] = {}
+        smoother = _BBoxSmoother()
 
         try:
             while True:
@@ -284,37 +338,50 @@ def main() -> None:
                 result.target_id = target_lock.target_id
                 result.target_status = target_lock.status
                 
-                # Identify matched target object and verify arrival trigger
+                # Identify matched target object — with EMA smoothing + coasting
                 target_obj = next(
                     (obj for obj in result.tracked_objects if obj.track_id == result.target_id),
                     None
                 )
-                
+
                 if target_obj is not None:
+                    # Live detection: EMA smooth bbox in-place
+                    target_obj.bbox = smoother.update(target_obj)
                     result.target_distance_m = target_obj.kalman_distance_m
-                    
-                    # Verify arrival conditions: target distance <= 0.5m and bbox center centered
+                elif target_lock.status in ("SEARCHING",) :
+                    # Target temporarily lost — coast on last known position
+                    coasted_bbox = smoother.coast()
+                    if coasted_bbox is not None:
+                        from data_contract import TrackedObject
+                        ghost = TrackedObject(
+                            track_id=result.target_id,
+                            bbox=coasted_bbox,
+                            class_name=smoother._last_class,
+                            kalman_distance_m=smoother._last_dist,
+                        )
+                        result.tracked_objects.append(ghost)
+                        target_obj = ghost
+                        result.target_distance_m = smoother._last_dist
+                    else:
+                        result.target_distance_m = float("nan")
+                else:
+                    smoother.reset()
+                    result.target_distance_m = float("nan")
+
+                if target_obj is not None:
                     x1, y1, x2, y2 = target_obj.bbox
-                    tx_center = (x1 + x2) / 2.0
-                    ty_center = (y1 + y2) / 2.0
-                    
-                    # Centered definition: within tolerance from center
                     frame_w, frame_h = config.cam_width, config.cam_height
-                    dx = abs(tx_center - frame_w / 2.0)
-                    dy = abs(ty_center - frame_h / 2.0)
-                    
+                    dx = abs((x1 + x2) / 2.0 - frame_w / 2.0)
+                    dy = abs((y1 + y2) / 2.0 - frame_h / 2.0)
                     is_centered = (dx <= config.arrival_center_tolerance * frame_w) and (
                         dy <= config.arrival_center_tolerance * frame_h
                     )
-                    
                     is_near = (
                         not math.isnan(target_obj.kalman_distance_m)
                         and target_obj.kalman_distance_m <= config.arrival_distance_m
                     )
-                    
                     result.target_is_arrived = is_centered and is_near
                 else:
-                    result.target_distance_m = float("nan")
                     result.target_is_arrived = False
 
                 # Garbage collect stale ReID vectors of tracks no longer present
@@ -356,23 +423,65 @@ def main() -> None:
                 if key == ord("q"):
                     logger.info("User requested exit.")
                     break
+                elif key == ord("r"):
+                    target_lock._handle_lost()
+                    smoother.reset()
+                    logger.info("Target lock reset — searching for new target.")
                 elif key == ord("t"):
-                    # Manual lock override on first target class detection
+                    # Lock on first visible target class object
                     lockable_objs = [
                         obj for obj in result.tracked_objects
                         if obj.class_name in config.target_classes
                     ]
                     if lockable_objs:
                         candidate = lockable_objs[0]
-                        candidate_id = candidate.track_id
-                        candidate_emb = reid_vectors.get(candidate_id)
+                        candidate_emb = reid_vectors.get(candidate.track_id)
                         if candidate_emb is not None:
-                            target_lock.manual_lock(candidate_id, candidate_emb)
-                            logger.info("Manual override triggered lock on target ID %d", candidate_id)
+                            target_lock.manual_lock(candidate.track_id, candidate_emb)
+                            smoother.reset()
+                            logger.info("Locked on track ID %d (%s)", candidate.track_id, candidate.class_name)
                         else:
-                            logger.warning("Manual override failed: ReID vector unavailable for ID %d", candidate_id)
+                            logger.warning("Lock failed: no ReID vector for ID %d", candidate.track_id)
                     else:
-                        logger.warning("Manual override failed: no target class object in frame")
+                        logger.warning("Lock failed: no target class object in frame")
+
+                elif key == ord("n"):
+                    # Cycle to the next target class object in frame
+                    lockable_objs = [
+                        obj for obj in result.tracked_objects
+                        if obj.class_name in config.target_classes
+                    ]
+                    if not lockable_objs:
+                        logger.warning("Cycle: no target class objects in frame")
+                    else:
+                        # Find index of current target, pick next (wrap around)
+                        ids = [obj.track_id for obj in lockable_objs]
+                        try:
+                            cur_idx = ids.index(result.target_id)
+                            next_idx = (cur_idx + 1) % len(ids)
+                        except ValueError:
+                            next_idx = 0  # current not in list → start from first
+
+                        candidate = lockable_objs[next_idx]
+                        candidate_emb = reid_vectors.get(candidate.track_id)
+                        if candidate_emb is not None:
+                            target_lock.manual_lock(candidate.track_id, candidate_emb)
+                            smoother.reset()
+                            logger.info(
+                                "Cycled to track ID %d (%s) [%d/%d]",
+                                candidate.track_id, candidate.class_name,
+                                next_idx + 1, len(ids),
+                            )
+                        else:
+                            # No ReID yet — force lock without template (will re-capture)
+                            target_lock.target_id = candidate.track_id
+                            target_lock.status = "LOCKED"
+                            smoother.reset()
+                            logger.info(
+                                "Cycled (no ReID) to track ID %d (%s) [%d/%d]",
+                                candidate.track_id, candidate.class_name,
+                                next_idx + 1, len(ids),
+                            )
 
         finally:
             cam.stop()

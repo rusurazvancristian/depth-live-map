@@ -14,9 +14,9 @@ MODEL_REGISTRY: Dict[str, str] = {
     "yolo26m.hef": (
         "https://github.com/DanielDubinsky/yolo26_hailo/releases/latest/download/yolo26m.hef"
     ),
-    "scdepthv3.hef": (
+    "depth_anything_v2_vits.hef": (
         "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/"
-        "ModelZoo/Compiled/v2.18.0/hailo8/scdepthv3.hef"
+        "ModelZoo/Compiled/v2.18.0/hailo8/depth_anything_v2_vits.hef"
     ),
     "repvgg_a0_person_reid_512.hef": (
         "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/"
@@ -45,15 +45,15 @@ class Config:
     # ── Model paths ──────────────────────────────────────────────────────────
     models_dir: str = "/home/martir/Downloads"
     yolo_hef_path: str = "/home/martir/Downloads/yolo26m.hef"
-    depth_hef_path: str = "/home/martir/Downloads/scdepthv3.hef"
+    depth_hef_path: str = "/home/martir/Downloads/depth_anything_v2_vits.hef"
     reid_hef_path: str = "/home/martir/Downloads/repvgg_a0_person_reid_512.hef"
     heights_json: str = "src/calibration/object_heights.json"
     intrinsics_json: str = "src/calibration/intrinsics.json"
 
     # ── Detection ────────────────────────────────────────────────────────────
     det_conf: float = 0.5
-    depth_input_height: int = 256
-    depth_input_width: int = 320
+    depth_input_height: int = 224
+    depth_input_width: int = 224
 
     # ── ReID (RepVGG-A0) ─────────────────────────────────────────────────────
     reid_input_height: int = 256
@@ -65,11 +65,11 @@ class Config:
     track_low_thresh: float = 0.1        # 2nd association threshold (unconfirmed)
     track_match_thresh: float = 0.8      # IoU matching threshold
     track_buffer: int = 30               # frames to keep lost tracks (1 second @ 30fps)
-    track_min_hits: int = 3              # min hits before track is confirmed
+    track_min_hits: int = 1              # min hits before track is confirmed
 
     # ── Target Lock (Exemplar Matching) ──────────────────────────────────────
     target_classes: tuple = ("person", "chair")  # auto-lock on first detection of these classes
-    golden_template_frames: int = 5      # consecutive stable frames to capture template
+    golden_template_frames: int = 3      # consecutive stable frames to capture template
     reid_cosine_threshold: float = 0.85  # cosine similarity for re-identification
     reid_search_timeout: int = 90        # frames in SEARCHING before giving up (3s @ 30fps)
 
