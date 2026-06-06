@@ -208,7 +208,7 @@ def main() -> None:
         )
         
         target_lock = TargetLock(
-            target_class=config.target_class_name,
+            target_class=config.target_classes,
             stable_frames=config.golden_template_frames,
             cosine_thresh=config.reid_cosine_threshold,
             search_timeout=config.reid_search_timeout,
@@ -269,7 +269,7 @@ def main() -> None:
                 target_bboxes = [
                     (obj.track_id, obj.bbox)
                     for obj in result.tracked_objects
-                    if obj.class_name == config.target_class_name
+                    if obj.class_name in config.target_classes
                 ]
                 
                 # Extract embeddings in batch
@@ -349,7 +349,7 @@ def main() -> None:
                     lineType=cv2.LINE_AA,
                 )
 
-                cv2.imshow(window_name, hud_frame)
+                cv2.imshow(window_name, cv2.cvtColor(hud_frame, cv2.COLOR_BGR2RGB))
 
                 # 9. Key press actions
                 key = cv2.waitKey(1) & 0xFF
@@ -360,7 +360,7 @@ def main() -> None:
                     # Manual lock override on first target class detection
                     lockable_objs = [
                         obj for obj in result.tracked_objects
-                        if obj.class_name == config.target_class_name
+                        if obj.class_name in config.target_classes
                     ]
                     if lockable_objs:
                         candidate = lockable_objs[0]

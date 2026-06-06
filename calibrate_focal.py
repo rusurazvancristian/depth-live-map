@@ -37,7 +37,6 @@ def open_cam():
     return cam
 
 def show(img):
-    """BGR frame → Wayland display (Qt5 needs RGB order)."""
     cv2.imshow(WIN, cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
 def put(img, lines, y0=28, col=(0, 200, 255)):

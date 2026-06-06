@@ -68,7 +68,7 @@ class Config:
     track_min_hits: int = 3              # min hits before track is confirmed
 
     # ── Target Lock (Exemplar Matching) ──────────────────────────────────────
-    target_class_name: str = "person"    # auto-lock on first detection of this class
+    target_classes: tuple = ("person", "chair")  # auto-lock on first detection of these classes
     golden_template_frames: int = 5      # consecutive stable frames to capture template
     reid_cosine_threshold: float = 0.85  # cosine similarity for re-identification
     reid_search_timeout: int = 90        # frames in SEARCHING before giving up (3s @ 30fps)

@@ -238,7 +238,12 @@ def draw_hud(
 
     # 6. Right side: Colormapped depth map representation
     if result.depth_map is not None:
-        depth_norm = (result.depth_map * 255).astype(np.uint8)
+        # depth_map values are exp(-log_disparity), proportional to metric depth
+        # Use percentile normalization to handle outliers
+        p2  = np.percentile(result.depth_map, 2)
+        p98 = np.percentile(result.depth_map, 98)
+        depth_clipped = np.clip(result.depth_map, p2, max(p98, p2 + 1e-6))
+        depth_norm = ((depth_clipped - p2) / (p98 - p2) * 255).astype(np.uint8)
         if invert_depth:
             depth_norm = 255 - depth_norm
 

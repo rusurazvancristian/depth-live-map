@@ -13,7 +13,7 @@ class TargetLock:
 
     def __init__(
         self,
-        target_class: str = "person",
+        target_class = "person",
         stable_frames: int = 5,
         cosine_thresh: float = 0.85,
         search_timeout: int = 90,
@@ -21,12 +21,14 @@ class TargetLock:
         """Initialize TargetLock.
 
         Args:
-            target_class: The class name to target (e.g. 'person').
+            target_class: Class name or tuple/list of class names to target.
             stable_frames: Number of consecutive frames the same track must be present to lock.
             cosine_thresh: Threshold for cosine similarity matching.
             search_timeout: Number of frames allowed to search for a lost target.
         """
-        self.target_class = target_class
+        self.target_classes = (
+            (target_class,) if isinstance(target_class, str) else tuple(target_class)
+        )
         self.stable_frames = stable_frames
         self.cosine_thresh = cosine_thresh
         self.search_timeout = search_timeout
@@ -87,7 +89,7 @@ class TargetLock:
     ) -> None:
         """Scan for candidate of target class and check stability."""
         # Find first object matching target class
-        target_objs = [obj for obj in tracked_objects if obj.class_name == self.target_class]
+        target_objs = [obj for obj in tracked_objects if obj.class_name in self.target_classes]
 
         if not target_objs:
             self._candidate_id = -1
@@ -151,7 +153,7 @@ class TargetLock:
         best_vector = None
 
         for obj in tracked_objects:
-            if obj.class_name != self.target_class:
+            if obj.class_name not in self.target_classes:
                 continue
             
             obj_id = obj.track_id

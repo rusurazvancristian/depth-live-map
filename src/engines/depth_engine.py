@@ -46,38 +46,33 @@ class DepthEngine(BaseEngine):
         )
 
     def process_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        """Process a raw BGR frame and return a normalized monocular depth map.
+        """Process a raw BGR frame and return a metric-proportional depth map.
+
+        SCDepthV3 outputs log-disparity (higher = closer). We convert to
+        exp(-raw) which gives values proportional to metric distance
+        (higher = farther), suitable for scale calibration via KalmanDepthEngine.
 
         Args:
             frame: Raw BGR frame.
 
         Returns:
-            Normalized depth map (256, 320) in range [0, 1], or None on error.
+            Depth map (256, 320) with values proportional to distance (exp-space),
+            or None on error.
         """
         try:
-            # Resize full frame to (input_w, input_h) -> width x height for cv2.resize
             resized = cv2.resize(frame, (self._input_w, self._input_h))
-
-            # Convert BGR to RGB
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-
-            # Copy into pre-allocated input batch buffer
             self._batch_buffer[0] = rgb
 
-            # Run inference
             raw_output = self._mux.infer(self._model_name, self._batch_buffer)
 
-            # Reshape output to (256, 320)
-            depth_map = raw_output.reshape((self._input_h, self._input_w))
+            # raw: log-disparity, shape (256, 320), higher = closer
+            raw = raw_output.reshape((self._input_h, self._input_w))
 
-            # Min-max normalize to [0, 1]
-            lo, hi = depth_map.min(), depth_map.max()
-            if hi - lo < 1e-6:
-                norm_depth = np.full_like(depth_map, 0.5)
-            else:
-                norm_depth = (depth_map - lo) / (hi - lo)
+            # exp(-raw): proportional to metric depth, higher = farther
+            depth_metric_prop = np.exp(-raw).astype(np.float32)
 
-            return norm_depth
+            return depth_metric_prop
 
         except Exception as exc:
             logger.error("DepthEngine failed to process frame: %s", exc, exc_info=True)

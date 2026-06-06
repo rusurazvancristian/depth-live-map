@@ -1,7 +1,11 @@
 {
-  "focal_length_px": 600.0,
-  "principal_point": [
-    320.0,
-    240.0
-  ]
+  "focal_length_px": 408.0,
+  "f_x": 408.0,
+  "f_y": 408.0,
+  "cx": 320.0,
+  "cy": 240.0,
+  "width": 640,
+  "height": 480,
+  "calibration_method": "empirical_rescale",
+  "notes": "IMX708 datasheet gave 627px, empirically corrected: 627*(2.8/4.3)=408. Displayed 4.3m, real 2.8m."
 }
