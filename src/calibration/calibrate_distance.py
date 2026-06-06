@@ -18,10 +18,54 @@ import time
 
 import cv2
 import numpy as np
-from picamera2 import Picamera2
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s — %(message)s")
 logger = logging.getLogger(__name__)
+
+if not PICAMERA2_AVAILABLE:
+    logger.warning("picamera2 not found. Initialising mock Picamera2 using system webcam / synthetic generator.")
+
+    class Picamera2:
+        """Mock Picamera2 implementation using OpenCV webcam or synthetic paper generator."""
+        def __init__(self) -> None:
+            self.cap = cv2.VideoCapture(0)
+            self.dummy_frame = None
+
+        def configure(self, cam_config) -> None:
+            pass
+
+        def start(self) -> None:
+            if not self.cap.isOpened():
+                logger.warning("Could not open system webcam. Generating synthetic test frames.")
+                self.dummy_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        def capture_array(self) -> np.ndarray:
+            if self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret:
+                    # OpenCV reads BGR, we return RGB to match Picamera2 output
+                    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Generate a dummy frame with a simulated A5 sheet of paper at 1.0m
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            # Center of frame is (320, 240)
+            # For 1.0m distance, size of paper in pixels is determined by camera matrix.
+            # E.g., paper height = 205mm, width = 150mm.
+            # If f_y = 600, rh = (height_m * f_y) / distance = (0.205 * 600) / 1.0 = 123 pixels
+            # rw = (width_m * f_x) / distance = (0.150 * 600) / 1.0 = 90 pixels
+            x1, y1 = 320 - 45, 240 - 61
+            x2, y2 = 320 + 45, 240 + 61
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (240, 240, 240), -1)
+            cv2.putText(frame, "MOCK A5 PAPER", (x1 + 5, y1 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (10, 10, 10), 1)
+            return frame
+
+        def stop(self) -> None:
+            if self.cap.isOpened():
+                self.cap.release()
 
 PAPER_W_M    = 0.150
 PAPER_H_M    = 0.205
@@ -66,11 +110,12 @@ class _Mouse:
 
 def _open_camera():
     cam = Picamera2()
-    cfg = cam.create_preview_configuration(
-        main={"size": (CAM_W, CAM_H), "format": "RGB888"},
-        controls={"FrameRate": 30, "AfMode": 0, "LensPosition": 0.0},
-    )
-    cam.configure(cfg)
+    if PICAMERA2_AVAILABLE:
+        cfg = cam.create_preview_configuration(
+            main={"size": (CAM_W, CAM_H), "format": "RGB888"},
+            controls={"FrameRate": 30, "AfMode": 0, "LensPosition": 0.0},
+        )
+        cam.configure(cfg)
     cam.start()
     time.sleep(1.0)
     return cam
@@ -111,7 +156,7 @@ def main():
                 frame = cam.capture_array()
                 vis = frame.copy()
                 _overlay_text(vis, ["Hold A5 paper at 1.0m",
-                                    "SPACE = freeze   Q = quit"])
+                                    "SPACE / F = freeze   Q = quit"])
                 cx, cy = CAM_W // 2, CAM_H // 2
                 cv2.line(vis, (cx-20, cy), (cx+20, cy), (0, 255, 0), 1)
                 cv2.line(vis, (cx, cy-20), (cx, cy+20), (0, 255, 0), 1)
@@ -119,7 +164,7 @@ def main():
             elif state == "FROZEN":
                 vis = frozen.copy()
                 _overlay_text(vis, ["Draw rectangle around paper",
-                                    "ENTER = accept   ESC = retry   Q = quit"])
+                                    "ENTER / A = accept   ESC / R = retry   Q = quit"])
                 roi = mouse.roi()
                 if roi:
                     x1, y1, x2, y2 = roi
@@ -137,28 +182,31 @@ def main():
                     f"f_y = {intrinsics['f_y']:.1f} px",
                     f"f_x = {intrinsics['f_x']:.1f} px",
                     f"Verify: {verify:.3f} m  (err {err_pct:.1f}%)",
-                    "ENTER = save   ESC = retry   Q = quit",
+                    "ENTER / S = save   ESC / R = retry   Q = quit",
                 ], color=(100, 255, 100))
 
             # ── Display first, then collect key ───────────────────────────
             _show(vis)
             key = cv2.waitKey(30) & 0xFF  # 30ms: pumps GUI events reliably
 
+            if key != 255:
+                logger.info("Key pressed: %d ('%s')", key, chr(key) if 32 <= key < 127 else "special")
+
             # ── Global keys ───────────────────────────────────────────────
-            if key == ord("q"):
+            if key in (ord("q"), ord("Q")):
                 logger.info("Quit without saving.")
                 break
 
             # ── State transitions ─────────────────────────────────────────
             if state == "LIVE":
-                if key == ord(" "):
+                if key in (ord(" "), ord("f"), ord("F")):
                     frozen = frame.copy()
                     mouse.reset()
                     state = "FROZEN"
                     logger.info("Frozen. Draw rectangle around the paper.")
 
             elif state == "FROZEN":
-                if key == 13 and mouse.done:  # ENTER
+                if key in (13, 10, ord("a"), ord("A")) and mouse.done:  # ENTER or 'a'
                     roi = mouse.roi()
                     if roi is None:
                         logger.warning("Rectangle too small — draw again.")
@@ -180,18 +228,18 @@ def main():
                         }
                         logger.info("f_y=%.1f  f_x=%.1f", f_y, f_x)
                         state = "RESULT"
-                elif key == 27:  # ESC
+                elif key in (27, ord("r"), ord("R")):  # ESC or 'r'
                     mouse.reset()
                     state = "LIVE"
                     logger.info("Retrying...")
 
             elif state == "RESULT":
-                if key == 13:  # ENTER — save
+                if key in (13, 10, ord("s"), ord("S")):  # ENTER or 's'
                     with open(OUT_PATH, "w") as f:
                         json.dump(intrinsics, f, indent=2)
                     logger.info("Saved → %s  (f_y=%.1f px)", OUT_PATH, intrinsics["f_y"])
                     break
-                elif key == 27:  # ESC — retry
+                elif key in (27, ord("r"), ord("R")):  # ESC or 'r'
                     mouse.reset()
                     intrinsics = None
                     state = "LIVE"
