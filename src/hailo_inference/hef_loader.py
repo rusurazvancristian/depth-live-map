@@ -44,6 +44,7 @@ class HailoMultiplexer:
         self._configured_g: Dict[str, Any] = {}
         self._input_names: Dict[str, str] = {}
         self._output_names: Dict[str, str] = {}
+        self._all_output_names: Dict[str, list] = {}
         self._input_shapes: Dict[str, Tuple[int, ...]] = {}
         self._output_shapes: Dict[str, Tuple[int, ...]] = {}
         self._pipelines: Dict[str, Any] = {}
@@ -97,7 +98,8 @@ class HailoMultiplexer:
                 
                 self._input_names[name] = in_infos[0].name
                 self._output_names[name] = out_infos[0].name
-                
+                self._all_output_names[name] = [o.name for o in out_infos]
+
                 self._input_shapes[name] = tuple(in_infos[0].shape)
                 self._output_shapes[name] = tuple(out_infos[0].shape)
 
@@ -167,6 +169,37 @@ class HailoMultiplexer:
         # Perform inference
         result_dict = pipeline.infer({input_name: input_data})
         return result_dict[output_name]
+
+    def infer_all(self, model_name: str, input_data: np.ndarray) -> Dict[str, np.ndarray]:
+        """Run inference and return the full output dict (all tensor names).
+
+        Needed for multi-output models like yolo26m (6 raw tensors).
+
+        Args:
+            model_name: Registered model key.
+            input_data: NHWC uint8 array.
+
+        Returns:
+            Dict mapping output tensor name -> np.ndarray.
+        """
+        if not HAILO_AVAILABLE:
+            return {self._output_names[model_name]: self._generate_mock_output(model_name)}
+
+        if model_name not in self._pipelines:
+            raise ValueError(f"Model '{model_name}' not loaded or initialized.")
+
+        pipeline = self._pipelines[model_name]
+        input_name = self._input_names[model_name]
+        return pipeline.infer({input_name: input_data})
+
+    def get_output_count(self, model_name: str) -> int:
+        """Return the number of output tensors for the named model."""
+        names = self._all_output_names.get(model_name)
+        return len(names) if names else 1
+
+    def get_all_output_names(self, model_name: str) -> list:
+        """Return all output tensor names for the named model."""
+        return self._all_output_names.get(model_name, [self._output_names[model_name]])
 
     def get_input_shape(self, model_name: str) -> Tuple[int, ...]:
         """Get the model's expected input shape (usually NHWC)."""

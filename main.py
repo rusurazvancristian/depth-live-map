@@ -128,14 +128,17 @@ def init_camera(config: Config) -> Picamera2:
     cam = Picamera2()
     if PICAMERA2_AVAILABLE:
         cam_config = cam.create_preview_configuration(
-            main={"size": (config.cam_width, config.cam_height), "format": "RGB888"},
-            controls={"FrameRate": config.cam_fps},
+            main={"size": (config.cam_width, config.cam_height), "format": "BGR888"},
+            controls={
+                "FrameRate": config.cam_fps,
+                "AfMode": 0,         # manual focus
+                "LensPosition": 0.0, # start at infinity
+            },
         )
         cam.configure(cam_config)
     cam.start()
-    # Warm up camera sensor
     time.sleep(1.0)
-    logger.info("Camera online: %dx%d @ %d FPS", config.cam_width, config.cam_height, config.cam_fps)
+    logger.info("Camera online: %dx%d @ %d FPS | focus=manual", config.cam_width, config.cam_height, config.cam_fps)
     return cam
 
 
@@ -224,21 +227,12 @@ def main() -> None:
         
         logger.info("HUD Pipeline running. Press [T] to manually lock on target, [Q] to quit.")
 
-        # Cache BGR frame buffer
-        frame_bgr = None
         reid_vectors: Dict[int, np.ndarray] = {}
 
         try:
             while True:
-                # Capture frame (RGB)
-                rgb_frame = cam.capture_array()
-                
-                # Check frame shape and allocate/lazy reallocate
-                if frame_bgr is None or frame_bgr.shape != rgb_frame.shape:
-                    frame_bgr = np.empty(rgb_frame.shape, dtype=np.uint8)
-
-                # Convert RGB -> BGR in-place
-                cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR, dst=frame_bgr)
+                # Capture frame (BGR888 — no conversion needed)
+                frame_bgr = cam.capture_array()
                 
                 timestamp = time.perf_counter()
                 

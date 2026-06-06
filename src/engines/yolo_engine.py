@@ -1,11 +1,15 @@
-"""Engine 1 — YOLO26s multi-object detection on Hailo-8 NPU.
+"""Engine 1 — YOLO26m multi-object detection on Hailo-8 NPU.
 
-Returns ALL detections above confidence threshold (not just best),
-compatible with downstream ByteTrack multi-object tracker.
+Auto-detects output format:
+  - Raw 6-tensor (yolo26m): sigmoid + grid ltrb decoder, simple resize.
+  - Single-tensor NMS-free: letterbox + xyxy passthrough.
+  - List NMS (legacy hailo): letterbox + class-list decoder.
+
+Returns ALL detections above confidence threshold for ByteTrack.
 """
 
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, Dict
 
 import cv2
 import numpy as np
@@ -15,6 +19,17 @@ from src.engines.base_engine import BaseEngine
 from src.hailo_inference.stream_utils import letterbox_resize, unletterbox_bbox
 
 logger = logging.getLogger(__name__)
+
+# Raw model scales: (stride, box_suffix, cls_suffix)
+_RAW_SCALES = [
+    (8,  "conv71", "conv74"),
+    (16, "conv87", "conv90"),
+    (32, "conv101", "conv104"),
+]
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    return np.where(x >= 0, 1.0 / (1.0 + np.exp(-x)), np.exp(x) / (1.0 + np.exp(x)))
 
 COCO_CLASSES: List[str] = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
@@ -59,21 +74,31 @@ class YOLOEngine(BaseEngine):
         self._conf_thr = conf_threshold
 
         input_shape = self._mux.get_input_shape(model_name)
-        # Input shape is (batch, H, W, C) or (H, W, C)
         if len(input_shape) == 4:
-            self._input_size = input_shape[1]  # square side, e.g. 640
+            self._input_size = input_shape[1]
         else:
             self._input_size = input_shape[0]
 
-        # Pre-allocated destination buffers for zero-allocation reuse
+        # Auto-detect raw multi-scale format (yolo26m has 6 output tensors)
+        self._raw_mode = self._mux.get_output_count(model_name) > 1
+        if self._raw_mode:
+            all_names = self._mux.get_all_output_names(model_name)
+            prefix = all_names[0].rsplit("/", 1)[0] + "/"
+            self._scale_keys = [
+                (stride, f"{prefix}{b}", f"{prefix}{c}")
+                for stride, b, c in _RAW_SCALES
+            ]
+
+        # Pre-allocated buffers for letterbox path
         self._dst_bgr: Optional[np.ndarray] = None
         self._batch_rgb: Optional[np.ndarray] = None
         self._orig_h: Optional[int] = None
         self._orig_w: Optional[int] = None
 
         logger.info(
-            "YOLOEngine ready | model=%s | conf_thr=%.2f | input=%d",
-            model_name, conf_threshold, self._input_size,
+            "YOLOEngine ready | model=%s | mode=%s | conf_thr=%.2f | input=%d",
+            model_name, "raw" if self._raw_mode else "nms",
+            conf_threshold, self._input_size,
         )
 
     def process(self, result: FrameResult) -> FrameResult:
@@ -91,38 +116,68 @@ class YOLOEngine(BaseEngine):
             frame_bgr = result.frame
             orig_h, orig_w = frame_bgr.shape[:2]
 
-            # Lazy allocate pre-allocated buffers on resolution change
-            if self._batch_rgb is None or self._orig_h != orig_h or self._orig_w != orig_w:
-                self._orig_h = orig_h
-                self._orig_w = orig_w
-                scale = self._input_size / max(orig_h, orig_w)
-                new_w, new_h = int(orig_w * scale), int(orig_h * scale)
-                self._dst_bgr = np.empty((new_h, new_w, 3), dtype=np.uint8)
-                self._batch_rgb = np.full(
-                    (1, self._input_size, self._input_size, 3), 114, dtype=np.uint8
+            if self._raw_mode:
+                # yolo26m: simple resize, no letterbox — coords are stride-relative
+                resized = cv2.resize(frame_bgr, (self._input_size, self._input_size))
+                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                batch = rgb[np.newaxis]
+                outputs = self._mux.infer_all(self._model_name, batch)
+                result.detections = self._decode_raw(outputs, orig_w, orig_h)
+            else:
+                # NMS / NMS-free single-tensor path
+                if self._batch_rgb is None or self._orig_h != orig_h or self._orig_w != orig_w:
+                    self._orig_h = orig_h
+                    self._orig_w = orig_w
+                    scale = self._input_size / max(orig_h, orig_w)
+                    new_w = int(orig_w * scale)
+                    new_h = int(orig_h * scale)
+                    self._dst_bgr = np.empty((new_h, new_w, 3), dtype=np.uint8)
+                    self._batch_rgb = np.full(
+                        (1, self._input_size, self._input_size, 3), 114, dtype=np.uint8
+                    )
+                rgb, scale, pad = letterbox_resize(
+                    frame_bgr, self._input_size,
+                    dst_bgr=self._dst_bgr, dst_rgb=self._batch_rgb[0],
                 )
-
-            # Preprocess using pre-allocated buffers
-            rgb, scale, pad = letterbox_resize(
-                frame_bgr,
-                self._input_size,
-                dst_bgr=self._dst_bgr,
-                dst_rgb=self._batch_rgb[0],
-            )
-            batch = self._batch_rgb
-
-            # Run NPU inference
-            raw = self._mux.infer(self._model_name, batch)
-
-            # Parse detections from raw output
-            detections = self._parse_detections(raw, scale, pad, orig_w, orig_h)
-            result.detections = detections
+                raw = self._mux.infer(self._model_name, self._batch_rgb)
+                result.detections = self._parse_detections(raw, scale, pad, orig_w, orig_h)
 
         except Exception as exc:
             logger.warning("YOLOEngine failed: %s", exc, exc_info=True)
             result.detections = []
 
         return result
+
+    def _decode_raw(self, outputs: Dict[str, np.ndarray], orig_w: int, orig_h: int) -> List[Detection]:
+        """Decode raw yolo26m 6-tensor output into Detection list.
+
+        Each scale pair: box (H,W,4) ltrb in stride units + cls (H,W,80) logits.
+        """
+        detections: List[Detection] = []
+        for stride, box_key, cls_key in self._scale_keys:
+            boxes = outputs[box_key][0]             # (H, W, 4)
+            probs = _sigmoid(outputs[cls_key][0])   # (H, W, 80)
+            scores = probs.max(axis=2)              # (H, W)
+            cls_ids = probs.argmax(axis=2)          # (H, W)
+
+            ys, xs = np.where(scores > self._conf_thr)
+            for y, x in zip(ys, xs):
+                cx = (x + 0.5) * stride
+                cy = (y + 0.5) * stride
+                l, t, r, b = boxes[y, x] * stride
+                x1 = int(np.clip((cx - l) / 640 * orig_w, 0, orig_w - 1))
+                y1 = int(np.clip((cy - t) / 640 * orig_h, 0, orig_h - 1))
+                x2 = int(np.clip((cx + r) / 640 * orig_w, 0, orig_w - 1))
+                y2 = int(np.clip((cy + b) / 640 * orig_h, 0, orig_h - 1))
+                if x2 > x1 and y2 > y1:
+                    cid = int(cls_ids[y, x])
+                    detections.append(Detection(
+                        bbox=(x1, y1, x2, y2),
+                        confidence=float(scores[y, x]),
+                        class_id=cid,
+                        class_name=COCO_CLASSES[cid] if cid < len(COCO_CLASSES) else str(cid),
+                    ))
+        return detections
 
     def _parse_detections(
         self,
