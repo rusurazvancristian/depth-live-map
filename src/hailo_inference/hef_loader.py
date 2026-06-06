@@ -32,10 +32,12 @@ class HEFModel:
         hef_path: str,
         device: VDevice | None = None,
         quantized_input: bool = False,
+        use_scheduler: bool = False,
     ) -> None:
         self._hef = HEF(hef_path)
         self._owns_device = device is None
         self._device = device if device is not None else VDevice()
+        self._use_scheduler = use_scheduler
 
         params = ConfigureParams.create_from_hef(
             self._hef, interface=HailoStreamInterface.PCIe,
@@ -53,6 +55,7 @@ class HEFModel:
 
         self.input_name: str = self._ng.get_input_vstream_infos()[0].name
         self.output_name: str = self._ng.get_output_vstream_infos()[0].name
+        self.output_names: list[str] = [i.name for i in self._ng.get_output_vstream_infos()]
         self.input_shape: tuple = tuple(self._ng.get_input_vstream_infos()[0].shape)
 
         logger.info(
@@ -62,10 +65,17 @@ class HEFModel:
 
     @contextmanager
     def session(self):
-        """Context manager: yields an InferVStreams callable inside an active network group."""
+        """Context manager: yields an InferVStreams pipeline ready for inference.
+
+        With scheduler (use_scheduler=True): activation is managed by the scheduler.
+        Without scheduler: explicit activation is required.
+        """
         with InferVStreams(self._ng, self._in_params, self._out_params) as pipeline:
-            with self._ng.activate(self._ng_params):
+            if self._use_scheduler:
                 yield pipeline
+            else:
+                with self._ng.activate(self._ng_params):
+                    yield pipeline
 
     def infer(self, pipeline, batch: np.ndarray) -> list:
         """Run a single inference call.
@@ -79,6 +89,18 @@ class HEFModel:
         """
         result = pipeline.infer({self.input_name: batch})
         return result[self.output_name]
+
+    def infer_all(self, pipeline, batch: np.ndarray) -> dict:
+        """Run inference and return full output dict (all tensor names).
+
+        Args:
+            pipeline: The InferVStreams object from session().
+            batch: NHWC uint8 array, e.g. shape (1, 640, 640, 3).
+
+        Returns:
+            Dict mapping output tensor name -> np.ndarray.
+        """
+        return pipeline.infer({self.input_name: batch})
 
     def __del__(self) -> None:
         if self._owns_device and hasattr(self, "_device"):

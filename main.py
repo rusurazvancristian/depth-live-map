@@ -8,6 +8,7 @@ import time
 import cv2
 import numpy as np
 from picamera2 import Picamera2
+from hailo_platform import VDevice, HailoSchedulingAlgorithm
 
 from config import Config
 from data_contract import FrameResult
@@ -61,14 +62,20 @@ def build_pipeline(config: Config) -> list[BaseEngine]:
     """
     focal_length_px = load_focal_length(config)
 
+    # Shared VDevice with ROUND_ROBIN scheduler — allows multiple HEF models on one chip
+    vdevice_params = VDevice.create_params()
+    vdevice_params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+    shared_device = VDevice(vdevice_params)
+
     engines: list[BaseEngine] = [
-        YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf),
+        YOLOEngine(hef_path=config.yolo_hef_path, conf_threshold=config.det_conf,
+                   device=shared_device, use_scheduler=True),
         GeometryEngine(focal_length_px=focal_length_px, heights_path=config.heights_json),
     ]
 
     if _DEPTH_AVAILABLE:
         engines.append(DepthEngine(hef_path=config.depth_hef_path,
-                                   model_input_size=config.depth_input_size))
+                                   device=shared_device, use_scheduler=True))
     if _FUSION_AVAILABLE:
         engines.append(FusionEngine(onnx_path=config.fusion_onnx_path,
                                     norm_path=config.fusion_norm_path))
@@ -178,6 +185,15 @@ def init_camera(config: Config) -> Picamera2:
     return cam
 
 
+def _render_depth_panel(depth_map: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
+    """Convert float log-disparity map to a coloured BGR panel for display."""
+    p2, p98 = np.percentile(depth_map, (2, 98))
+    norm = np.clip((depth_map - p2) / max(p98 - p2, 1e-6), 0.0, 1.0)
+    grey = (norm * 255).astype(np.uint8)
+    coloured = cv2.applyColorMap(grey, cv2.COLORMAP_INFERNO)
+    return cv2.resize(coloured, (target_w, target_h))
+
+
 def main() -> None:
     config = Config()
     cam = init_camera(config)
@@ -186,22 +202,29 @@ def main() -> None:
     yolo: YOLOEngine = engines[0]
     yolo.start()
 
+    depth_engine = next((e for e in engines if e.name == "DepthEngine"), None)
+    if depth_engine is not None:
+        depth_engine.start()
+
+    has_depth = depth_engine is not None and config.show_depth_map
+    win_w = config.display_width if has_depth else config.cam_width
+    win_h = config.display_height
+
     WINDOW = "How Far?"
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, config.display_width, config.display_height)
+    cv2.resizeWindow(WINDOW, win_w, win_h)
 
     # Focus slider: 0 (infinity) .. 100 (macro ~0.1m)
     cv2.createTrackbar("Focus (0=inf)", WINDOW, 0, 100, lambda _: None)
 
     fps = 0.0
     t_prev = time.perf_counter()
-    last_lens_val = -1  # detect changes
+    last_lens_val = -1
 
-    logger.info("Pipeline running. Slider = focus. Press Q to quit.")
+    logger.info("Pipeline running. R=reset tracker. Q=quit.")
 
     try:
         while True:
-            # Apply focus only when slider moves (avoid spamming camera controls)
             slider_val = cv2.getTrackbarPos("Focus (0=inf)", WINDOW)
             if slider_val != last_lens_val:
                 dioptres = _slider_to_dioptres(slider_val)
@@ -219,20 +242,45 @@ def main() -> None:
 
             vis = draw_overlay(frame, result, fps)
 
-            # Focus info overlay (bottom-right)
             dioptres = _slider_to_dioptres(slider_val)
             focus_text = f"Focus: {_dioptres_to_distance(dioptres)}"
             h, w = vis.shape[:2]
             cv2.putText(vis, focus_text, (w - 160, h - 36),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 220, 255), 1, cv2.LINE_AA)
 
-            cv2.imshow(WINDOW, cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
+            if has_depth and depth_engine.depth_map is not None:
+                depth_panel = _render_depth_panel(depth_engine.depth_map, win_h, config.cam_width)
+                # Highlight bbox region on depth panel
+                if result.class_id >= 0:
+                    x1, y1, x2, y2 = result.bbox
+                    dw_scale = config.cam_width / frame.shape[1]
+                    dh_scale = win_h / frame.shape[0]
+                    cv2.rectangle(depth_panel,
+                                  (int(x1 * dw_scale), int(y1 * dh_scale)),
+                                  (int(x2 * dw_scale), int(y2 * dh_scale)),
+                                  (0, 255, 0), 2)
+                    if not math.isnan(result.rel_depth_score):
+                        cv2.putText(depth_panel, f"d={result.rel_depth_score:.2f}",
+                                    (int(x1 * dw_scale) + 4, int(y1 * dh_scale) + 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
+                # Stack camera + depth side by side
+                vis_resized = cv2.resize(vis, (config.cam_width, win_h))
+                display = np.hstack([vis_resized, depth_panel])
+            else:
+                display = cv2.resize(vis, (win_w, win_h))
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            cv2.imshow(WINDOW, cv2.cvtColor(display, cv2.COLOR_BGR2RGB))
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            if key == ord("r"):
+                yolo.reset_tracker()
 
     finally:
         yolo.stop()
+        if depth_engine is not None:
+            depth_engine.stop()
         cam.stop()
         cv2.destroyAllWindows()
         logger.info("Pipeline stopped.")
