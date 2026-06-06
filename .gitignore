@@ -1,5 +1,19 @@
+# Python caches
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
+
+# Pytest cache
+.pytest_cache/
+
+# Large model artifacts
 models/*.onnx
+models/*.hef
 models/*.pt
-hailort.log
+models/*_norm.json
+
+# Local virtual environment
+.venv/
+venv/
+env/

@@ -1,96 +1,92 @@
-"""Engine 3 — SCDepthV3 monocular depth on Hailo-8 NPU. [TRACK B / implemented by Track A]"""
+"""Engine — Monocular relative depth estimation via SCDepthV3 on Hailo NPU."""
 
 import logging
-
+from typing import Optional
 import cv2
 import numpy as np
-
 from data_contract import FrameResult
 from src.engines.base_engine import BaseEngine
-from src.hailo_inference.hef_loader import HEFModel
-from src.hailo_inference.stream_utils import to_nhwc_batch
 
 logger = logging.getLogger(__name__)
 
-# scdepthv3 fixed input size: H=256, W=320
-_IN_H, _IN_W = 256, 320
-
 
 class DepthEngine(BaseEngine):
-    """SCDepthV3 monocular depth estimator on Hailo-8 NPU.
+    """Monocular relative depth estimation engine using SCDepthV3 on Hailo NPU.
 
-    Input:  (256, 320, 3) RGB UINT8
-    Output: (256, 320, 1) float32 log-disparity — higher = closer.
-
-    Reads:  frame, bbox, class_id
-    Writes: rel_depth_score, depth_variance
-            depth_map (extra attribute for visualization, not in data contract)
-
-    Args:
-        hef_path: Path to scdepthv3.hef.
-        device: Shared VDevice, or None to create a new one.
+    Reads:  frame
+    Writes: depth_map
     """
 
-    def __init__(self, hef_path: str, device=None, use_scheduler: bool = False) -> None:
-        self._model = HEFModel(hef_path, device=device, use_scheduler=use_scheduler)
-        self._pipeline_ctx = None
-        self._pipeline = None
-        self.depth_map: np.ndarray | None = None  # latest (H,W) for display
-        logger.info("DepthEngine ready | model=%s | input=(%d,%d)", hef_path, _IN_H, _IN_W)
+    def __init__(
+        self,
+        multiplexer,
+        model_name: str = "depth",
+        input_h: int = 256,
+        input_w: int = 320,
+    ) -> None:
+        """Initialize Depth engine.
 
-    def start(self) -> None:
-        self._pipeline_ctx = self._model.session()
-        self._pipeline = self._pipeline_ctx.__enter__()
+        Args:
+            multiplexer: HailoMultiplexer instance managing the VDevice.
+            model_name: Key used when loading the depth model in the multiplexer.
+            input_h: Expected input height.
+            input_w: Expected input width.
+        """
+        self._mux = multiplexer
+        self._model_name = model_name
+        self._input_h = input_h
+        self._input_w = input_w
 
-    def stop(self) -> None:
-        if self._pipeline_ctx is not None:
-            self._pipeline_ctx.__exit__(None, None, None)
-            self._pipeline = None
+        # Pre-allocate single batch buffer: shape (1, 256, 320, 3) uint8
+        self._batch_buffer = np.empty((1, input_h, input_w, 3), dtype=np.uint8)
 
-    def process(self, result: FrameResult) -> FrameResult:
-        """Run depth inference on result.frame.
+        logger.info(
+            "DepthEngine ready | model=%s | input=%dx%d",
+            model_name, input_w, input_h
+        )
 
-        Writes rel_depth_score and depth_variance for the detected bbox region.
-        If no valid detection (class_id < 0), scores are NaN.
+    def process_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        """Process a raw BGR frame and return a normalized monocular depth map.
+
+        Args:
+            frame: Raw BGR frame.
+
+        Returns:
+            Normalized depth map (256, 320) in range [0, 1], or None on error.
         """
         try:
-            frame_bgr = result.frame
-            orig_h, orig_w = frame_bgr.shape[:2]
+            # Resize full frame to (input_w, input_h) -> width x height for cv2.resize
+            resized = cv2.resize(frame, (self._input_w, self._input_h))
 
-            resized = cv2.resize(frame_bgr, (_IN_W, _IN_H))
+            # Convert BGR to RGB
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            batch = to_nhwc_batch(rgb)
 
-            raw = self._model.infer(self._pipeline, batch)
-            # raw shape: (1, 256, 320, 1) float32
-            depth = raw[0, :, :, 0]   # (H, W) log-disparity, higher = closer
-            self.depth_map = depth
+            # Copy into pre-allocated input batch buffer
+            self._batch_buffer[0] = rgb
 
-            if result.class_id < 0 or result.bbox == (0, 0, 0, 0):
-                result.rel_depth_score = float("nan")
-                result.depth_variance = float("nan")
-                return result
+            # Run inference
+            raw_output = self._mux.infer(self._model_name, self._batch_buffer)
 
-            # Project bbox from original frame coords to depth map coords
-            x1, y1, x2, y2 = result.bbox
-            dx1 = int(np.clip(x1 / orig_w * _IN_W, 0, _IN_W - 1))
-            dy1 = int(np.clip(y1 / orig_h * _IN_H, 0, _IN_H - 1))
-            dx2 = int(np.clip(x2 / orig_w * _IN_W, 1, _IN_W))
-            dy2 = int(np.clip(y2 / orig_h * _IN_H, 1, _IN_H))
+            # Reshape output to (256, 320)
+            depth_map = raw_output.reshape((self._input_h, self._input_w))
 
-            roi = depth[dy1:dy2, dx1:dx2]
-            if roi.size == 0:
-                result.rel_depth_score = float("nan")
-                result.depth_variance = float("nan")
-                return result
+            # Min-max normalize to [0, 1]
+            lo, hi = depth_map.min(), depth_map.max()
+            if hi - lo < 1e-6:
+                norm_depth = np.full_like(depth_map, 0.5)
+            else:
+                norm_depth = (depth_map - lo) / (hi - lo)
 
-            result.rel_depth_score = float(np.median(roi))
-            result.depth_variance = float(np.var(roi))
+            return norm_depth
 
         except Exception as exc:
-            logger.warning("DepthEngine failed: %s", exc)
-            result.rel_depth_score = float("nan")
-            result.depth_variance = float("nan")
-            self.depth_map = None
+            logger.error("DepthEngine failed to process frame: %s", exc, exc_info=True)
+            return None
 
+    def process(self, result: FrameResult) -> FrameResult:
+        """Process FrameResult through DepthEngine.
+
+        Extracts the full depth map and writes it to result.depth_map.
+        """
+        result.depth_map = self.process_frame(result.frame)
         return result
